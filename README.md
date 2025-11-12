@@ -156,7 +156,7 @@ Add a job that installs uv, exports `AZDO_*`, and runs the command. When running
         versionSpec: '3.12'
 
     - script: |
-        uv tool install azure-pipelines-validator
+        uv tool install azure-pipeline-validator
         azure-pipelines-validator workflows/
       env:
         AZDO_ORG: $(System.TeamFoundationCollectionUri)
@@ -183,7 +183,30 @@ uv run python -m pytest
 
 ## Publishing the package
 
-The package is published to PyPI automatically via GitHub Actions when a new tag is pushed. To publish a new version:
+The package is published to PyPI automatically via GitHub Actions when a new tag is pushed using Trusted Publishing (OIDC) - no API tokens needed!
+
+### First-time Setup (Required Before First Publish)
+
+**Important:** Trusted Publishing cannot create new projects on PyPI. You must create the project manually first:
+
+1. **Create the project on PyPI:**
+   - Go to https://pypi.org/manage/projects/
+   - Click "Add new project"
+   - Enter project name: `azure-pipeline-validator` (must match `name` in `pyproject.toml`)
+     - Click "Create"
+
+2. **Set up Trusted Publishing:**
+   - Go to https://pypi.org/manage/account/publishing/
+   - Click "Add a new trusted publisher"
+   - Fill in:
+     - **PyPI project name**: `azure-pipeline-validator`
+     - **Owner**: `andrewmaspero` (your GitHub username)
+     - **Repository name**: `azure-pipelines-validator`
+     - **Workflow filename**: `pipeline.yml`
+     - **Environment name**: `pypi` (optional but recommended)
+   - Click "Add trusted publisher"
+
+### Publishing a New Version
 
 1. Update `version` in `pyproject.toml`.
 2. Commit and push the changes.
@@ -192,20 +215,20 @@ The package is published to PyPI automatically via GitHub Actions when a new tag
 The CI pipeline will automatically:
 - Run all tests
 - Build the package
-- Publish to PyPI (requires `PYPI_API_TOKEN` secret in GitHub)
+- Publish to PyPI using Trusted Publishing (OIDC)
 
 Once published, consumers can install and use it via:
 
 ```bash
 # Using uvx (no installation needed)
-uvx azure-pipelines-validator --help
+uvx azure-pipeline-validator --help
 
 # Or install globally
-uv tool install azure-pipelines-validator
+uv tool install azure-pipeline-validator
 azure-pipelines-validator --help
 
 # Or with pip
-pip install azure-pipelines-validator
+pip install azure-pipeline-validator
 azure-pipelines-validator --help
 ```
 
@@ -216,7 +239,7 @@ uv build
 uv publish
 ```
 
-Set `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` environment variables, or use `PYPI_API_TOKEN` for token-based authentication.
+For manual publishing, you'll need to set `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` environment variables, or use a PyPI API token.
 
 ## Troubleshooting
 

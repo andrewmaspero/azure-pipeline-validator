@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Sync dependencies
+        run: uv sync --dev
+        env:
+          UV_PYTHON: python3.13
+
+      - name: Run Ruff
+        run: uv run --python 3.13 ruff check
+
+      - name: Run Pytest
+        run: uv run --python 3.13 pytest -q

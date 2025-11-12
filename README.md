@@ -51,12 +51,17 @@ uv run azure-pipelines-validator --help
 Published usage via `uvx` (no clone required):
 
 ```bash
-uvx --from git+https://github.com/andrewmaspero/azure-pipelines-validator.git \\
-  azure-pipelines-validator --help
+uvx azure-pipelines-validator --help
 ```
 
-Global install with uv:
+Global install with uv (install once, use anywhere):
 
+```bash
+uv tool install git+https://github.com/andrewmaspero/azure-pipelines-validator.git
+azure-pipelines-validator --help
+```
+
+Once published to PyPI, you can also use:
 ```bash
 uv tool install azure-pipelines-validator
 azure-pipelines-validator --help
@@ -178,18 +183,40 @@ uv run python -m pytest
 
 ## Publishing the package
 
+The package is published to PyPI automatically via GitHub Actions when a new tag is pushed. To publish a new version:
+
 1. Update `version` in `pyproject.toml`.
-2. Optionally tag the release: `git tag v0.x.y && git push --tags`.
-3. Build and publish through uv (see [uv publish](https://docs.astral.sh/uv/guides/package/)):
+2. Commit and push the changes.
+3. Create and push a tag: `git tag v0.x.y && git push --tags`.
 
-   ```bash
-   uv build
-   uv publish
-   ```
+The CI pipeline will automatically:
+- Run all tests
+- Build the package
+- Publish to PyPI (requires `PYPI_API_TOKEN` secret in GitHub)
 
-   Set `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` if you push to Azure Artifacts, CodeArtifact, etc.
+Once published, consumers can install and use it via:
 
-Consumers can then run `uvx --from git+https://github.com/andrewmaspero/azure-pipelines-validator.git azure-pipelines-validator …` immediately.
+```bash
+# Using uvx (no installation needed)
+uvx azure-pipelines-validator --help
+
+# Or install globally
+uv tool install azure-pipelines-validator
+azure-pipelines-validator --help
+
+# Or with pip
+pip install azure-pipelines-validator
+azure-pipelines-validator --help
+```
+
+For manual publishing, use uv directly:
+
+```bash
+uv build
+uv publish
+```
+
+Set `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` environment variables, or use `PYPI_API_TOKEN` for token-based authentication.
 
 ## Troubleshooting
 

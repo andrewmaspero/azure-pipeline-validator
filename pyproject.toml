@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Comprehensive Azure DevOps YAML validator"
 readme = "README.md"
 requires-python = ">=3.13"
-authors = [{ name = "AFCA DevOps" }]
+authors = [{ name = "Andrew Maspero", email = "andrew@maspero.co" }]
 license = { text = "MIT" }
 keywords = ["azure", "devops", "pipelines", "yaml", "validator"]
 classifiers = [

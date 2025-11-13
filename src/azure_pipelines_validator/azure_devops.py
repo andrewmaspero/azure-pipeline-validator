@@ -6,7 +6,7 @@ from base64 import b64encode
 from contextlib import AbstractContextManager
 
 import httpx
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from .exceptions import AzureDevOpsError
 from .models import (
@@ -80,6 +80,30 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
         )
 
 
+def list_projects(
+    organization: str,
+    token: SecretStr,
+    *,
+    top: int | None = None,
+    timeout_seconds: float = 30.0,
+) -> list[ProjectSummary]:
+    """Return projects visible to the PAT within the specified organization."""
+
+    params = {"api-version": API_VERSION}
+    if top is not None:
+        params["$top"] = str(top)
+
+    base = str(organization).rstrip("/")
+    endpoint = f"{base}/_apis/projects"
+    headers = AzureDevOpsClient._default_headers(token)
+    with httpx.Client(timeout=timeout_seconds, headers=headers) as client:
+        response = client.get(endpoint, params=params)
+    if response.is_success:
+        payload = response.json()
+        return [ProjectSummary.model_validate(item) for item in payload.get("value", [])]
+    raise AzureDevOpsError(response.status_code, _extract_message(response))
+
+
 def _encode_pat(token: SecretStr) -> str:
     raw = f":{token.get_secret_value()}".encode("ascii")
     return b64encode(raw).decode("ascii")
@@ -91,3 +115,10 @@ def _extract_message(response: httpx.Response) -> str:
         return service_message.message
     except Exception:  # pragma: no cover - fall back to status line
         return response.text
+class ProjectSummary(BaseModel):
+    """Minimal projection of an Azure DevOps project."""
+
+    id: str
+    name: str
+    state: str
+    description: str | None = None

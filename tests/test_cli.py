@@ -2,14 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from azure_pipelines_validator import cli
+from azure_pipelines_validator.azure_devops import ProjectSummary
 from azure_pipelines_validator.cli import _consume_inline_env
 from azure_pipelines_validator.exceptions import AzureDevOpsError
 from azure_pipelines_validator.models import PreviewResponse
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def isolated_cli_defaults(monkeypatch, tmp_path: Path) -> None:
+    config_dir = tmp_path / "cli-config"
+    config_dir.mkdir()
+    monkeypatch.setenv("AZURE_DEVOPS_EXT_CONFIG_DIR", str(config_dir))
 
 
 def env_vars() -> dict[str, str]:
@@ -47,6 +56,7 @@ def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
         [
+            "validate",
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
@@ -85,6 +95,7 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
         [
+            "validate",
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
@@ -114,7 +125,7 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
 def test_cli_reports_settings_error(tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--preview"],
+        ["validate", str(tmp_path), "--preview"],
         env={},
     )
 
@@ -140,6 +151,7 @@ def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
         [
+            "validate",
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
@@ -161,7 +173,7 @@ def test_cli_yamllint_only_runs_without_env(tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--repo-root", str(tmp_path), "--lint"],
+        ["validate", str(tmp_path), "--repo-root", str(tmp_path), "--lint"],
         env={},
     )
 
@@ -172,7 +184,7 @@ def test_cli_yamllint_only_runs_without_env(tmp_path: Path) -> None:
 def test_cli_requires_toggle(tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
-        [str(tmp_path)],
+        ["validate", str(tmp_path)],
         env={},
     )
 
@@ -190,7 +202,7 @@ def test_schema_runs_without_preview(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--schema"],
+        ["validate", str(tmp_path), "--schema"],
         env={},
     )
 
@@ -209,3 +221,36 @@ def test_inline_env_assignments(tmp_path: Path) -> None:
     assert env["AZDO_PAT"] == "123"
     assert env["AZDO_ORG"] == "https://dev.azure.com/example"
     assert remaining == ["--flag=value", str(tmp_path)]
+
+
+def test_projects_command_uses_cli_defaults(monkeypatch, tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config").write_text(
+        "[defaults]\norganization=https://dev.azure.com/example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AZURE_DEVOPS_EXT_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("AZDO_PAT", "token")
+    sample = [
+        ProjectSummary(id="1", name="Alpha", state="well", description=None),
+        ProjectSummary(id="2", name="Beta", state="creating", description=None),
+    ]
+    monkeypatch.setattr(cli, "_fetch_projects", lambda org, token, top: sample)
+
+    result = runner.invoke(cli.app, ["projects"], env={})
+
+    assert result.exit_code == 0
+    assert "Alpha" in result.stdout
+    assert "Beta" in result.stdout
+
+
+def test_projects_command_errors_without_org(monkeypatch) -> None:
+    monkeypatch.delenv("AZDO_ORG", raising=False)
+    monkeypatch.delenv("AZDO_PAT", raising=False)
+    monkeypatch.setattr(cli, "discover_defaults", lambda: cli.CliDefaults())
+
+    result = runner.invoke(cli.app, ["projects"], env={})
+
+    assert result.exit_code == 2
+    assert "Set AZDO_ORG" in result.stdout

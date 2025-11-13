@@ -35,3 +35,16 @@ def test_discover_pat_falls_back_to_default_key(monkeypatch, tmp_path) -> None:
     token = azure_cli.discover_pat("https://dev.azure.com/unknown", env=env)
 
     assert token == "fallback"
+
+
+def test_discover_defaults_reads_config(tmp_path) -> None:
+    env = {"AZURE_DEVOPS_EXT_CONFIG_DIR": str(tmp_path)}
+    (tmp_path / "config").write_text(
+        "[defaults]\norganization = https://dev.azure.com/acme\nproject = demo\n",
+        encoding="utf-8",
+    )
+
+    defaults = azure_cli.discover_defaults(env=env)
+
+    assert defaults.organization == "https://dev.azure.com/acme"
+    assert defaults.project == "demo"

@@ -10,9 +10,14 @@ from pathlib import Path
 from typing import Annotated, MutableMapping, Sequence
 
 import typer
+from pydantic import SecretStr
+from rich import box
 from rich.console import Console
+from rich.table import Table
 
-from .azure_devops import AzureDevOpsClient
+from .azure_cli import CliDefaults, discover_defaults, discover_pat
+from .azure_devops import AzureDevOpsClient, ProjectSummary
+from .azure_devops import list_projects as fetch_projects
 from .exceptions import AzureDevOpsError, SchemaUnavailableError, SettingsError
 from .file_scanner import FileScanner
 from .models import ValidationOptions
@@ -300,12 +305,85 @@ def validate(
         raise typer.Exit(code=1)
 
 
+@app.command(name="projects", help="List Azure DevOps projects visible to your PAT.")
+def list_projects(
+    azdo_org: AzureOrgOption = None,
+    azdo_pat: AzurePatOption = None,
+    top: Annotated[
+        int,
+        typer.Option(
+            "--top",
+            min=1,
+            max=200,
+            show_default=True,
+            help="Maximum number of projects to display.",
+        ),
+    ] = 25,
+) -> None:
+    console = Console()
+    defaults = discover_defaults()
+    organization_value = _resolve_org(azdo_org, defaults)
+    if not organization_value:
+        console.print(
+            "[bold red]Set AZDO_ORG or configure a default organization via "
+            "`az devops configure --defaults organization=...`."
+        )
+        raise typer.Exit(code=2)
+
+    token = _resolve_token(azdo_pat, organization_value)
+    if token is None:
+        console.print(
+            "[bold red]Set AZDO_PAT / SYSTEM_ACCESSTOKEN or sign in with `az devops login`."
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        projects = _fetch_projects(organization_value, token, top)
+    except AzureDevOpsError as error:
+        console.print(f"[bold red]{error}")
+        raise typer.Exit(code=1) from error
+
+    if not projects:
+        console.print("[bold yellow]No projects returned for this organization.")
+        return
+
+    table = Table(title="Azure DevOps projects", box=box.ROUNDED, highlight=True)
+    table.add_column("Name", overflow="fold")
+    table.add_column("ID", overflow="fold")
+    table.add_column("State")
+
+    for project in projects:
+        table.add_row(project.name, project.id, project.state)
+
+    console.print(table)
+
+
 def main() -> None:
     """Entry point used by the console script."""
 
     new_args = _consume_inline_env(sys.argv[1:])
+    commands = {"projects"}
+    if new_args and new_args[0] not in commands:
+        new_args = ["validate", *new_args]
     sys.argv = [sys.argv[0], *new_args]
     app()
+
+
+def _resolve_org(value: str | None, defaults: CliDefaults) -> str | None:
+    return value or os.getenv("AZDO_ORG") or defaults.organization
+
+
+def _resolve_token(value: str | None, organization: str) -> str | None:
+    return (
+        value
+        or os.getenv("AZDO_PAT")
+        or os.getenv("SYSTEM_ACCESSTOKEN")
+        or discover_pat(organization)
+    )
+
+
+def _fetch_projects(organization: str, token: str, top: int) -> list[ProjectSummary]:
+    return fetch_projects(organization, SecretStr(token), top=top)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution helper

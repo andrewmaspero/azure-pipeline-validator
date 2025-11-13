@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from configparser import ConfigParser, NoOptionError, NoSectionError
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlparse
@@ -18,6 +19,14 @@ DEVOPS_CONFIG_DIR_ENV = "AZURE_DEVOPS_EXT_CONFIG_DIR"
 DEVOPS_PAT_ENV = "AZURE_DEVOPS_EXT_PAT"
 _DEFAULT_USERNAME = "Personal Access Token"
 _DEFAULT_KEY = "azdevops-cli: default"
+_CONFIG_FILE_NAME = "config"
+_DEFAULTS_SECTION = "defaults"
+
+
+@dataclass(frozen=True)
+class CliDefaults:
+    organization: str | None = None
+    project: str | None = None
 
 
 def discover_pat(
@@ -34,6 +43,25 @@ def discover_pat(
 
     reader = _CredentialReader(env_map)
     return reader.get_token(organization)
+
+
+def discover_defaults(env: Mapping[str, str] | None = None) -> CliDefaults:
+    """Read default organization/project configured via `az devops configure`."""
+
+    env_map = env or os.environ
+    config_dir = _resolve_config_dir(env_map)
+    config_path = config_dir / _CONFIG_FILE_NAME
+    parser = ConfigParser(interpolation=None)
+    if not config_path.exists():
+        return CliDefaults()
+    parser.read(config_path)
+    if not parser.has_section(_DEFAULTS_SECTION):
+        return CliDefaults()
+    section = parser[_DEFAULTS_SECTION]
+    return CliDefaults(
+        organization=section.get("organization"),
+        project=section.get("project"),
+    )
 
 
 class _CredentialReader:
@@ -104,4 +132,4 @@ def _normalize_org_url(organization: str) -> str:
     return normalized
 
 
-__all__ = ["discover_pat"]
+__all__ = ["discover_pat", "discover_defaults", "CliDefaults"]

@@ -82,3 +82,17 @@ def test_invalid_pipeline_id(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(SettingsError):
         Settings.from_environment(repo_root=tmp_path)
+
+
+def test_azure_cli_token_used_when_env_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AZDO_ORG", "https://dev.azure.com/org")
+    monkeypatch.setenv("AZDO_PROJECT", "project")
+    monkeypatch.setenv("AZDO_PIPELINE_ID", "17")
+    monkeypatch.delenv("AZDO_PAT", raising=False)
+    monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
+
+    monkeypatch.setattr("azure_pipelines_validator.settings.discover_pat", lambda org: "from-az-cli")
+
+    settings = Settings.from_environment(repo_root=tmp_path)
+
+    assert settings.personal_access_token.get_secret_value() == "from-az-cli"

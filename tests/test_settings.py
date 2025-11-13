@@ -98,3 +98,24 @@ def test_azure_cli_token_used_when_env_missing(monkeypatch, tmp_path: Path) -> N
     settings = Settings.from_environment(repo_root=tmp_path)
 
     assert settings.personal_access_token.get_secret_value() == "from-az-cli"
+
+
+def test_cli_defaults_used_for_org_and_project(monkeypatch, tmp_path: Path) -> None:
+    config_dir = tmp_path / "config-dir"
+    config_dir.mkdir()
+    config_path = config_dir / "config"
+    config_path.write_text(
+        "[defaults]\norganization=https://dev.azure.com/default\nproject=cli-project\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("AZURE_DEVOPS_EXT_CONFIG_DIR", str(config_dir))
+    monkeypatch.delenv("AZDO_ORG", raising=False)
+    monkeypatch.delenv("AZDO_PROJECT", raising=False)
+    monkeypatch.setenv("AZDO_PIPELINE_ID", "42")
+    monkeypatch.setenv("AZDO_PAT", "token")
+
+    settings = Settings.from_environment(repo_root=tmp_path)
+
+    assert str(settings.organization) == "https://dev.azure.com/default"
+    assert settings.project == "cli-project"

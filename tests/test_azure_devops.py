@@ -4,7 +4,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from azure_pipelines_validator.azure_devops import AzureDevOpsClient
+from azure_pipelines_validator.azure_devops import AzureDevOpsClient, list_projects
 from azure_pipelines_validator.exceptions import AzureDevOpsError
 from azure_pipelines_validator.models import PreviewResponse
 from azure_pipelines_validator.settings import Settings
@@ -78,3 +78,31 @@ def test_download_schema(tmp_path):
     client.close()
 
     assert result == schema_text
+
+
+def test_list_projects(monkeypatch):
+    payload = {
+        "value": [
+            {"id": "1", "name": "Alpha", "state": "well", "description": "demo"},
+            {"id": "2", "name": "Beta", "state": "new"},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        assert url.startswith("https://dev.azure.com/acme/_apis/projects")
+        assert "$top=2" in url or "top=2" in url
+        assert "api-version" in url
+        return httpx.Response(200, json=payload)
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*, timeout, headers):
+        return real_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(httpx, "Client", client_factory)
+
+    result = list_projects("https://dev.azure.com/acme", SecretStr("token"), top=2)
+
+    assert [project.name for project in result] == ["Alpha", "Beta"]

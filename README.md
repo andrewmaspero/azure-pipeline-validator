@@ -100,8 +100,8 @@ Export the same variables you would in an Azure Pipelines job, or pass them via 
 
 | Variable | Description |
 | --- | --- |
-| `AZDO_ORG` / `--azdo-org` | Organization URL, e.g. `https://dev.azure.com/contoso`. |
-| `AZDO_PROJECT` / `--azdo-project` | Project that owns the pipeline. |
+| `AZDO_ORG` / `--azdo-org` | Organization URL, e.g. `https://dev.azure.com/contoso`. (Falls back to `az devops configure --defaults organization=...`.) |
+| `AZDO_PROJECT` / `--azdo-project` | Project that owns the pipeline. (Falls back to `az devops configure --defaults project=...`.) |
 | `AZDO_PIPELINE_ID` / `--azdo-pipeline-id` | ID of an existing YAML pipeline (any pipeline is fine). |
 | `AZDO_PAT` / `--azdo-pat` | PAT with Build (Read & Execute); use `SYSTEM_ACCESSTOKEN` inside CI. |
 | `AZDO_REFNAME` | Optional ref used when expanding templates (default `refs/heads/main`). |
@@ -111,7 +111,18 @@ Export the same variables you would in an Azure Pipelines job, or pass them via 
 > - You can set variables inline without shell-specific syntax: `uvx azure-pipeline-validator AZDO_ORG=https://dev.azure.com/contoso AZDO_PROJECT=demo ...`
 > - Every Azure option also has a CLI flag, e.g. `uvx azure-pipeline-validator --azdo-org https://dev.azure.com/contoso --azdo-pat token workflows/`.
 > - Already signed in via `az devops login`? The cached PAT from the Azure CLI DevOps extension (or `AZURE_DEVOPS_EXT_PAT`) is picked up automatically.
+> - Defaults configured via `az devops configure --defaults organization=... project=...` are used whenever `AZDO_ORG`/`AZDO_PROJECT` are missing.
 > - Inside Azure Pipelines you can skip `AZDO_PAT` by enabling “Allow scripts to access the OAuth token” and mapping it to `SYSTEM_ACCESSTOKEN`.
+
+### Discovering available projects
+
+Need to remember project names? Run:
+
+```bash
+uvx azure-pipeline-validator projects --top 20
+```
+
+The command reuses the same credential discovery (env vars, `az devops login`, defaults configured via `az devops configure`).
 
 ## Usage examples
 

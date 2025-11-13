@@ -8,7 +8,7 @@ from typing import Final
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
 
-from .azure_cli import discover_pat
+from .azure_cli import CliDefaults, discover_defaults, discover_pat
 from .exceptions import SettingsError
 
 
@@ -40,13 +40,21 @@ class Settings(BaseModel):
         """Create settings by reading Azure DevOps variables or explicit overrides."""
 
         resolved_root = (repo_root or Path.cwd()).resolve()
-        org_value = organization or os.getenv("AZDO_ORG")
-        if not org_value:
-            raise SettingsError("Environment variable AZDO_ORG is required")
+        cli_defaults: CliDefaults = discover_defaults()
 
-        project_value = project or os.getenv("AZDO_PROJECT")
+        org_value = organization or os.getenv("AZDO_ORG") or cli_defaults.organization
+        if not org_value:
+            raise SettingsError(
+                "Organization must be provided via parameters, AZDO_ORG, or configured via "
+                "`az devops configure --defaults organization=...`."
+            )
+
+        project_value = project or os.getenv("AZDO_PROJECT") or cli_defaults.project
         if not project_value:
-            raise SettingsError("Environment variable AZDO_PROJECT is required")
+            raise SettingsError(
+                "Project must be provided via parameters, AZDO_PROJECT, or configured via "
+                "`az devops configure --defaults project=...`."
+            )
 
         pipeline_value = pipeline_id or os.getenv("AZDO_PIPELINE_ID")
         if pipeline_value is None:

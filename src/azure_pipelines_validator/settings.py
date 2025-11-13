@@ -25,45 +25,63 @@ class Settings(BaseModel):
     request_timeout_seconds: float = Field(default=30.0, gt=0)
 
     @classmethod
-    def from_environment(cls, repo_root: Path | None = None) -> "Settings":
-        """Create settings by reading the documented Azure DevOps variables."""
+    def from_environment(
+        cls,
+        repo_root: Path | None = None,
+        *,
+        organization: str | None = None,
+        project: str | None = None,
+        pipeline_id: int | str | None = None,
+        personal_access_token: str | None = None,
+        ref_name: str | None = None,
+        timeout_seconds: float | str | None = None,
+    ) -> "Settings":
+        """Create settings by reading Azure DevOps variables or explicit overrides."""
 
         resolved_root = (repo_root or Path.cwd()).resolve()
-        token = os.getenv("AZDO_PAT") or os.getenv("SYSTEM_ACCESSTOKEN")
+        token = (
+            personal_access_token
+            or os.getenv("AZDO_PAT")
+            or os.getenv("SYSTEM_ACCESSTOKEN")
+        )
         if not token:
             raise SettingsError(
-                "Set AZDO_PAT or expose SYSTEM_ACCESSTOKEN before running validation."
+                "Set AZDO_PAT (or SYSTEM_ACCESSTOKEN) before running preview/schema validation."
             )
 
-        organization = _require_env("AZDO_ORG")
-        project = _require_env("AZDO_PROJECT")
-        pipeline_raw = _require_env("AZDO_PIPELINE_ID")
-        ref_name = os.getenv("AZDO_REFNAME") or "refs/heads/main"
-        timeout_raw = os.getenv("AZDO_TIMEOUT_SECONDS")
+        org_value = organization or os.getenv("AZDO_ORG")
+        if not org_value:
+            raise SettingsError("Environment variable AZDO_ORG is required")
+
+        project_value = project or os.getenv("AZDO_PROJECT")
+        if not project_value:
+            raise SettingsError("Environment variable AZDO_PROJECT is required")
+
+        pipeline_value = pipeline_id or os.getenv("AZDO_PIPELINE_ID")
+        if pipeline_value is None:
+            raise SettingsError("Environment variable AZDO_PIPELINE_ID is required")
 
         try:
-            pipeline_id = int(pipeline_raw)
-        except ValueError as exc:
+            pipeline_numeric = int(pipeline_value)
+        except (TypeError, ValueError) as exc:
             raise SettingsError("AZDO_PIPELINE_ID must be an integer") from exc
 
-        timeout = float(timeout_raw) if timeout_raw else AZURE_TIMEOUT_DEFAULT
+        ref_value = ref_name or os.getenv("AZDO_REFNAME") or "refs/heads/main"
+
+        timeout_value: float
+        if timeout_seconds is not None:
+            timeout_value = float(timeout_seconds)
+        else:
+            timeout_raw = os.getenv("AZDO_TIMEOUT_SECONDS")
+            timeout_value = float(timeout_raw) if timeout_raw else AZURE_TIMEOUT_DEFAULT
 
         return cls(
-            organization=organization,
-            project=project,
-            pipeline_id=pipeline_id,
+            organization=org_value,
+            project=project_value,
+            pipeline_id=pipeline_numeric,
             personal_access_token=SecretStr(token),
-            ref_name=ref_name,
+            ref_name=ref_value,
             repo_root=resolved_root,
-            request_timeout_seconds=timeout,
+            request_timeout_seconds=timeout_value,
         )
-
-
-def _require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise SettingsError(f"Environment variable {name} is required")
-    return value
-
-
 AZURE_TIMEOUT_DEFAULT: Final[float] = 30.0

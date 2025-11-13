@@ -49,7 +49,16 @@ class FileScanner:
 
     @staticmethod
     def _is_candidate(path: Path) -> bool:
-        return path.is_file() and not any(part.startswith(".") for part in path.parts)
+        if not path.is_file():
+            return False
+        excluded_dirs = {".git", ".github", "azure-pipeline-validator"}
+        allowed_hidden = {".azure-pipelines"}
+        for part in path.parts:
+            if part in excluded_dirs:
+                return False
+            if part.startswith(".") and part not in allowed_hidden:
+                return False
+        return True
 
 
 def iter_single_file(path: Path) -> Iterable[Path]:

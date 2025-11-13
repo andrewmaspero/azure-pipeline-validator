@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .azure_devops import AzureDevOpsClient
+from .exceptions import AzureDevOpsError
 from .file_scanner import FileScanner
 from .models import (
     FileValidationResult,
@@ -24,7 +25,7 @@ class ValidationService:
 
     def __init__(
         self,
-        client: AzureDevOpsClient,
+        client: AzureDevOpsClient | None,
         scanner: FileScanner,
         loader: DocumentLoader,
         wrapper: TemplateWrapper,
@@ -44,8 +45,17 @@ class ValidationService:
         for file_path in files:
             document = self._loader.load(file_path)
             lint_findings = self._run_lint(document, options)
-            schema_findings = self._run_schema(document, options)
-            preview_findings, final_yaml = self._run_preview(document, options)
+
+            wrapped_content: str | None = None
+            if options.include_schema or options.include_preview:
+                wrapped_content = self._wrapper.wrap(document)
+
+            schema_findings = self._run_schema(
+                document, options, wrapped_content
+            )
+            preview_findings, final_yaml = self._run_preview(
+                document, options, wrapped_content
+            )
 
             result = FileValidationResult(
                 path=file_path,
@@ -67,19 +77,38 @@ class ValidationService:
         return self._yamllint_runner.run(document.path, document.content)
 
     def _run_schema(
-        self, document: YamlDocument, options: ValidationOptions
+        self,
+        document: YamlDocument,
+        options: ValidationOptions,
+        wrapped_content: str | None,
     ) -> tuple[SchemaFinding, ...]:
         if not options.include_schema or self._schema_validator is None:
             return tuple()
-        return self._schema_validator.validate(document.path, document.content)
+        content = wrapped_content if wrapped_content is not None else document.content
+        return self._schema_validator.validate(document.path, content)
 
     def _run_preview(
-        self, document: YamlDocument, options: ValidationOptions
+        self,
+        document: YamlDocument,
+        options: ValidationOptions,
+        wrapped_content: str | None,
     ) -> tuple[tuple[PreviewFinding, ...], str | None]:
         if not options.include_preview:
             return tuple(), None
-        wrapped = self._wrapper.wrap(document)
-        response = self._client.preview(wrapped)
+        if self._client is None:
+            raise RuntimeError("Preview requested but Azure DevOps client is not configured")
+        wrapped = wrapped_content if wrapped_content is not None else self._wrapper.wrap(document)
+        try:
+            response = self._client.preview(wrapped)
+        except AzureDevOpsError as error:
+            if options.fail_fast:
+                raise
+            finding = PreviewFinding(
+                path=document.path,
+                message=error.detail,
+                level=None,
+            )
+            return (finding,), None
         findings: list[PreviewFinding] = []
         for message in response.validation_results:
             findings.append(

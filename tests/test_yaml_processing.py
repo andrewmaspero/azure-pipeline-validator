@@ -40,21 +40,21 @@ def test_document_loader_detects_kind(tmp_path: Path) -> None:
     assert document.path == file_path
 
 
-def test_template_wrapper_variants() -> None:
-    wrapper = TemplateWrapper()
+def test_template_wrapper_variants(tmp_path: Path) -> None:
+    wrapper = TemplateWrapper(repo_root=tmp_path)
 
     stages_document = YamlDocument(
-        path=Path("stages/deploy.yml"),
+        path=tmp_path / "stages/deploy.yml",
         content="stages: []",
         kind=YamlKind.STAGES_TEMPLATE,
     )
     jobs_document = YamlDocument(
-        path=Path("jobs/build.yml"),
+        path=tmp_path / "jobs/build.yml",
         content="jobs: []",
         kind=YamlKind.JOBS_TEMPLATE,
     )
     steps_document = YamlDocument(
-        path=Path("steps/lint.yml"),
+        path=tmp_path / "steps/lint.yml",
         content="steps: []",
         kind=YamlKind.STEPS_TEMPLATE,
     )
@@ -63,6 +63,29 @@ def test_template_wrapper_variants() -> None:
     jobs_wrapped = wrapper.wrap(jobs_document)
     steps_wrapped = wrapper.wrap(steps_document)
 
-    assert "template: stages/deploy.yml" in stages_wrapped
-    assert "jobs:" in jobs_wrapped and "template: jobs/build.yml" in jobs_wrapped
-    assert "steps:" in steps_wrapped and "template: steps/lint.yml" in steps_wrapped
+    assert "template: /stages/deploy.yml" in stages_wrapped
+    assert "jobs:" in jobs_wrapped and "template: /jobs/build.yml" in jobs_wrapped
+    assert "steps:" in steps_wrapped and "template: /steps/lint.yml" in steps_wrapped
+
+
+def test_template_wrapper_injects_parameter_placeholders(tmp_path: Path) -> None:
+    wrapper = TemplateWrapper(repo_root=tmp_path)
+
+    document = YamlDocument(
+        path=tmp_path / "jobs/apply.yml",
+        content=(
+            "parameters:\n"
+            "  - name: imageName\n"
+            "  - name: enableScan\n"
+            "    type: boolean\n"
+            "jobs: []\n"
+        ),
+        kind=YamlKind.JOBS_TEMPLATE,
+    )
+
+    wrapped = wrapper.wrap(document)
+
+    assert "template: /jobs/apply.yml" in wrapped
+    assert "parameters:" in wrapped
+    assert "imageName: validator-placeholder" in wrapped
+    assert "enableScan: false" in wrapped

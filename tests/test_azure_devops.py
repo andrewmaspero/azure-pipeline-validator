@@ -67,7 +67,10 @@ def test_download_schema(tmp_path):
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert "yamlschema" in str(request.url)
+        assert (
+            str(request.url)
+            == "https://dev.azure.com/acme/_apis/distributedtask/yamlschema?api-version=7.1"
+        )
         return httpx.Response(200, text=schema_text)
 
     client = attach_transport(AzureDevOpsClient(settings), handler)

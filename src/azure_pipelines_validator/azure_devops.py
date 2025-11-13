@@ -62,10 +62,7 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
         raise AzureDevOpsError(response.status_code, _extract_message(response))
 
     def download_schema(self) -> str:
-        endpoint = (
-            f"{self._base}/{self._settings.project}/_apis/distributedtask/"
-            f"yamlschema?api-version={API_VERSION}"
-        )
+        endpoint = f"{self._base}/_apis/distributedtask/yamlschema?api-version={API_VERSION}"
         response = self._client.get(endpoint)
         if response.is_success:
             return response.text

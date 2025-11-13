@@ -53,6 +53,53 @@ def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
     assert "Validated" in result.stdout
 
 
+def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--azdo-org",
+            "https://dev.azure.com/example",
+            "--azdo-project",
+            "demo",
+            "--azdo-pipeline-id",
+            "9",
+            "--azdo-pat",
+            "token",
+            "--azdo-ref-name",
+            "refs/heads/dev",
+            "--azdo-timeout-seconds",
+            "12",
+        ],
+        env={},
+    )
+
+    assert result.exit_code == 0
+    assert "Validated" in result.stdout
+
+
 def test_cli_reports_settings_error(tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
@@ -87,4 +134,24 @@ def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "Azure DevOps responded" in result.stdout
+    assert "boom" in result.stdout
+
+
+def test_cli_yamllint_only_runs_without_env(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cli.app,
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-schema",
+            "--skip-preview",
+        ],
+        env={},
+    )
+
+    assert result.exit_code == 0
+    assert "Validated" in result.stdout

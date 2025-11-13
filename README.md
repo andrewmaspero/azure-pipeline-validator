@@ -71,14 +71,16 @@ Pip install will also work once published (`pip install azure-pipeline-validator
 
 ## Required environment
 
-Export the same variables you would in an Azure Pipelines job:
+Environment variables (or their CLI equivalents) are only required when schema or preview validation is enabled. Pure yamllint runs (`--skip-schema --skip-preview`) no longer need Azure credentials.
+
+Export the same variables you would in an Azure Pipelines job, or pass them via the `--azdo-*` options:
 
 | Variable | Description |
 | --- | --- |
-| `AZDO_ORG` | Organization URL, e.g. `https://dev.azure.com/contoso`. |
-| `AZDO_PROJECT` | Project that owns the pipeline. |
-| `AZDO_PIPELINE_ID` | ID of an existing YAML pipeline (any pipeline is fine). |
-| `AZDO_PAT` | PAT with Build (Read & Execute); use `SYSTEM_ACCESSTOKEN` inside CI. |
+| `AZDO_ORG` / `--azdo-org` | Organization URL, e.g. `https://dev.azure.com/contoso`. |
+| `AZDO_PROJECT` / `--azdo-project` | Project that owns the pipeline. |
+| `AZDO_PIPELINE_ID` / `--azdo-pipeline-id` | ID of an existing YAML pipeline (any pipeline is fine). |
+| `AZDO_PAT` / `--azdo-pat` | PAT with Build (Read & Execute); use `SYSTEM_ACCESSTOKEN` inside CI. |
 | `AZDO_REFNAME` | Optional ref used when expanding templates (default `refs/heads/main`). |
 | `AZDO_TIMEOUT_SECONDS` | Optional HTTP timeout override (default 30). |
 
@@ -257,3 +259,13 @@ Feel free to fork, contribute improvements, or publish your own build. This READ
 ## License
 
 `azure-pipeline-validator` is open source software released under the [MIT License](LICENSE). Contributions are welcome—just open an issue or pull request so we can review changes together.
+  --azdo-org URL                       Organization URL (overrides AZDO_ORG).
+  --azdo-project NAME                  Project name (overrides AZDO_PROJECT).
+  --azdo-pipeline-id ID                Pipeline ID used for preview (overrides
+                                       AZDO_PIPELINE_ID).
+  --azdo-pat TOKEN                     PAT or OAuth token (overrides AZDO_PAT /
+                                       SYSTEM_ACCESSTOKEN).
+  --azdo-ref-name REF                  Ref name for template expansion
+                                       (overrides AZDO_REFNAME).
+  --azdo-timeout-seconds SECONDS       HTTP timeout override (overrides
+                                       AZDO_TIMEOUT_SECONDS).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated
 
@@ -57,11 +58,83 @@ RepoRootOption = Annotated[
     ),
 ]
 
+AzureOrgOption = Annotated[
+    str | None,
+    typer.Option(
+        "--azdo-org",
+        metavar="URL",
+        show_default=False,
+        rich_help_panel="Azure connection",
+        help="Organization URL (overrides AZDO_ORG).",
+    ),
+]
+
+AzureProjectOption = Annotated[
+    str | None,
+    typer.Option(
+        "--azdo-project",
+        metavar="NAME",
+        show_default=False,
+        rich_help_panel="Azure connection",
+        help="Project name (overrides AZDO_PROJECT).",
+    ),
+]
+
+AzurePipelineIdOption = Annotated[
+    int | None,
+    typer.Option(
+        "--azdo-pipeline-id",
+        metavar="ID",
+        show_default=False,
+        rich_help_panel="Azure connection",
+        help="Pipeline ID used for preview (overrides AZDO_PIPELINE_ID).",
+    ),
+]
+
+AzurePatOption = Annotated[
+    str | None,
+    typer.Option(
+        "--azdo-pat",
+        metavar="TOKEN",
+        show_default=False,
+        rich_help_panel="Azure connection",
+        help="PAT or OAuth token (overrides AZDO_PAT / SYSTEM_ACCESSTOKEN).",
+    ),
+]
+
+AzureRefOption = Annotated[
+    str | None,
+    typer.Option(
+        "--azdo-ref-name",
+        metavar="REF",
+        show_default=False,
+        rich_help_panel="Azure connection",
+        help="Ref name for template expansion (overrides AZDO_REFNAME).",
+    ),
+]
+
+AzureTimeoutOption = Annotated[
+    float | None,
+    typer.Option(
+        "--azdo-timeout-seconds",
+        metavar="SECONDS",
+        show_default=False,
+        rich_help_panel="Azure connection",
+        help="HTTP timeout override (overrides AZDO_TIMEOUT_SECONDS).",
+    ),
+]
+
 
 @app.command(help="Run yamllint, schema validation, and Azure preview against YAML files.")
 def validate(
     target: TargetArg = Path("."),
     repo_root: RepoRootOption = None,
+    azdo_org: AzureOrgOption = None,
+    azdo_project: AzureProjectOption = None,
+    azdo_pipeline_id: AzurePipelineIdOption = None,
+    azdo_pat: AzurePatOption = None,
+    azdo_ref_name: AzureRefOption = None,
+    azdo_timeout_seconds: AzureTimeoutOption = None,
     run_yamllint: Annotated[
         bool,
         typer.Option(
@@ -105,22 +178,37 @@ def validate(
     """
 
     console = Console()
-    effective_repo_root = repo_root or Path.cwd()
+    effective_repo_root = (repo_root or Path.cwd()).resolve()
+    requires_azure = run_schema or run_preview
 
-    try:
-        settings = Settings.from_environment(repo_root=effective_repo_root)
-    except SettingsError as error:
-        console.print(f"[bold red]{error}")
-        raise typer.Exit(code=2) from error
+    settings = None
+    if requires_azure:
+        try:
+            settings = Settings.from_environment(
+                repo_root=effective_repo_root,
+                organization=azdo_org,
+                project=azdo_project,
+                pipeline_id=azdo_pipeline_id,
+                personal_access_token=azdo_pat,
+                ref_name=azdo_ref_name,
+                timeout_seconds=azdo_timeout_seconds,
+            )
+        except SettingsError as error:
+            console.print(f"[bold red]{error}")
+            raise typer.Exit(code=2) from error
 
-    scanner = FileScanner(settings.repo_root)
+    scanner = FileScanner(effective_repo_root)
     loader = DocumentLoader()
-    wrapper = TemplateWrapper()
+    wrapper = TemplateWrapper(repo_root=effective_repo_root)
     yamllint_runner = YamllintRunner() if run_yamllint else None
 
-    with AzureDevOpsClient(settings) as client:
+    client_context = (
+        AzureDevOpsClient(settings) if settings is not None else nullcontext(None)
+    )
+
+    with client_context as client:
         schema_validator = None
-        if run_schema:
+        if run_schema and client is not None:
             schema_validator = SchemaValidator(client.download_schema)
         service = ValidationService(
             client=client,
@@ -142,7 +230,7 @@ def validate(
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=1) from error
 
-    reporter = Reporter(repo_root=settings.repo_root, console=console)
+    reporter = Reporter(repo_root=effective_repo_root, console=console)
     reporter.display(summary)
     if not summary.success:
         raise typer.Exit(code=1)

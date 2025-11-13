@@ -39,6 +39,30 @@ def test_from_environment_prefers_system_access_token(monkeypatch, tmp_path: Pat
     assert settings.request_timeout_seconds == AZURE_TIMEOUT_DEFAULT
 
 
+def test_from_environment_allows_overrides(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AZDO_ORG", raising=False)
+    monkeypatch.delenv("AZDO_PROJECT", raising=False)
+    monkeypatch.delenv("AZDO_PIPELINE_ID", raising=False)
+    monkeypatch.delenv("AZDO_PAT", raising=False)
+
+    settings = Settings.from_environment(
+        repo_root=tmp_path,
+        organization="https://dev.azure.com/inline",
+        project="inline-project",
+        pipeline_id=123,
+        personal_access_token="inline-pat",
+        ref_name="refs/heads/feature",
+        timeout_seconds=45,
+    )
+
+    assert str(settings.organization) == "https://dev.azure.com/inline"
+    assert settings.project == "inline-project"
+    assert settings.pipeline_id == 123
+    assert settings.personal_access_token.get_secret_value() == "inline-pat"
+    assert settings.ref_name == "refs/heads/feature"
+    assert settings.request_timeout_seconds == 45
+
+
 def test_missing_variables_raise_settings_error(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("AZDO_ORG", raising=False)
     monkeypatch.delenv("AZDO_PROJECT", raising=False)

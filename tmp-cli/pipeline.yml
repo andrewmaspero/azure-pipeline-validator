@@ -1,1 +1,8 @@
 trigger: none
+
+stages:
+  - stage: Smoke
+    jobs:
+      - job: hello
+        steps:
+          - script: echo "validator sample"

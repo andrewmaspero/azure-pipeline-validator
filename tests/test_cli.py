@@ -185,7 +185,7 @@ def test_schema_runs_without_preview(monkeypatch, tmp_path: Path) -> None:
     target.write_text("trigger: none\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli, "download_public_schema", lambda timeout: "{\"type\": \"object\"}", raising=False
+        cli, "download_public_schema", lambda timeout: '{"type": "object"}', raising=False
     )
 
     result = runner.invoke(

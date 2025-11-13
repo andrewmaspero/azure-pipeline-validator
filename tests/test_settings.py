@@ -91,7 +91,9 @@ def test_azure_cli_token_used_when_env_missing(monkeypatch, tmp_path: Path) -> N
     monkeypatch.delenv("AZDO_PAT", raising=False)
     monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
 
-    monkeypatch.setattr("azure_pipelines_validator.settings.discover_pat", lambda org: "from-az-cli")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.settings.discover_pat", lambda org: "from-az-cli"
+    )
 
     settings = Settings.from_environment(repo_root=tmp_path)
 

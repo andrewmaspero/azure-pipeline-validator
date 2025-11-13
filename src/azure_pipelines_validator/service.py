@@ -50,12 +50,8 @@ class ValidationService:
             if options.include_schema or options.include_preview:
                 wrapped_content = self._wrapper.wrap(document)
 
-            schema_findings = self._run_schema(
-                document, options, wrapped_content
-            )
-            preview_findings, final_yaml = self._run_preview(
-                document, options, wrapped_content
-            )
+            schema_findings = self._run_schema(document, options, wrapped_content)
+            preview_findings, final_yaml = self._run_preview(document, options, wrapped_content)
 
             result = FileValidationResult(
                 path=file_path,

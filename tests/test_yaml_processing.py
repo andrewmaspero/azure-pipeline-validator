@@ -74,11 +74,7 @@ def test_template_wrapper_injects_parameter_placeholders(tmp_path: Path) -> None
     document = YamlDocument(
         path=tmp_path / "jobs/apply.yml",
         content=(
-            "parameters:\n"
-            "  - name: imageName\n"
-            "  - name: enableScan\n"
-            "    type: boolean\n"
-            "jobs: []\n"
+            "parameters:\n  - name: imageName\n  - name: enableScan\n    type: boolean\njobs: []\n"
         ),
         kind=YamlKind.JOBS_TEMPLATE,
     )

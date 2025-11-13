@@ -65,10 +65,7 @@ class TemplateWrapper:
         parameters_block = self._format_parameters(document, indent="    ")
         parameters_section = f"\n{parameters_block}" if parameters_block else ""
         return (
-            "trigger: none\n"
-            "pr: none\n"
-            "stages:\n"
-            f"  - template: {template_path}{parameters_section}\n"
+            f"trigger: none\npr: none\nstages:\n  - template: {template_path}{parameters_section}\n"
         )
 
     def _wrap_jobs(self, document: YamlDocument) -> str:
@@ -103,9 +100,11 @@ class TemplateWrapper:
         overrides = self._collect_required_parameters(document)
         if not overrides:
             return None
-        dumped_lines = yaml.safe_dump(
-            overrides, default_flow_style=False, sort_keys=False
-        ).strip().splitlines()
+        dumped_lines = (
+            yaml.safe_dump(overrides, default_flow_style=False, sort_keys=False)
+            .strip()
+            .splitlines()
+        )
         values = "\n".join(f"{indent}  {line}" for line in dumped_lines)
         return f"{indent}parameters:\n{values}"
 

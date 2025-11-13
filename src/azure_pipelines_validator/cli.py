@@ -18,8 +18,8 @@ from .file_scanner import FileScanner
 from .models import ValidationOptions
 from .reporter import Reporter
 from .schema_engine import SchemaValidator
-from .service import ValidationService
 from .schema_sources import download_public_schema
+from .service import ValidationService
 from .settings import AZURE_TIMEOUT_DEFAULT, Settings
 from .yaml_processing import DocumentLoader, TemplateWrapper
 from .yamllint_engine import YamllintRunner
@@ -223,7 +223,8 @@ def validate(
 
     if not any((run_yamllint, run_schema, run_preview)):
         console.print(
-            "[bold yellow]Select at least one validation toggle (e.g. --lint/-l, --schema/-s, --preview/-p)."
+            "[bold yellow]Select at least one validation toggle "
+            "(use --lint/-l, --schema/-s, or --preview/-p)."
         )
         raise typer.Exit(code=2)
 
@@ -248,9 +249,7 @@ def validate(
     wrapper = TemplateWrapper(repo_root=effective_repo_root)
     yamllint_runner = YamllintRunner() if run_yamllint else None
 
-    client_context = (
-        AzureDevOpsClient(settings) if settings is not None else nullcontext(None)
-    )
+    client_context = AzureDevOpsClient(settings) if settings is not None else nullcontext(None)
 
     with client_context as client:
         schema_validator = None

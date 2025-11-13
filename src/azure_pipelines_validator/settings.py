@@ -87,4 +87,6 @@ class Settings(BaseModel):
             repo_root=resolved_root,
             request_timeout_seconds=timeout_value,
         )
+
+
 AZURE_TIMEOUT_DEFAULT: Final[float] = 30.0

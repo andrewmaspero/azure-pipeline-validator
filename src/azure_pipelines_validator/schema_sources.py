@@ -8,8 +8,7 @@ from .exceptions import SchemaUnavailableError
 from .settings import AZURE_TIMEOUT_DEFAULT
 
 PUBLIC_SCHEMA_URL = (
-    "https://raw.githubusercontent.com/microsoft/azure-pipelines-vscode/master/"
-    "service-schema.json"
+    "https://raw.githubusercontent.com/microsoft/azure-pipelines-vscode/master/service-schema.json"
 )
 
 
@@ -28,7 +27,9 @@ def download_public_schema(timeout: float | None = None) -> str:
             timeout=request_timeout,
             follow_redirects=True,
         )
-    except httpx.HTTPError as exc:  # pragma: no cover - network failures exercised via exception branch
+    except (
+        httpx.HTTPError
+    ) as exc:  # pragma: no cover - network failures exercised via exception branch
         raise SchemaUnavailableError(f"Unable to download schema: {exc}") from exc
 
     if response.is_success:
@@ -36,4 +37,3 @@ def download_public_schema(timeout: float | None = None) -> str:
     raise SchemaUnavailableError(
         f"Unable to download schema (HTTP {response.status_code}): {response.text[:200]}"
     )
-

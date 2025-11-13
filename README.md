@@ -41,18 +41,41 @@ The CLI understands both single files and whole repositories, wraps templates au
 
 ## Installation & invocation
 
-Local development (inside this repo):
+### Getting started (recommended)
 
-```bash
-cd /path/to/azure-pipeline-validator
-uv run azure-pipeline-validator --help
-```
+1. **Install uv** (pick the command for your OS):
 
-Published usage via `uvx` (no clone required):
+   - macOS / Linux
+     ```bash
+     curl -LsSf https://astral.sh/uv/install.sh | sh
+     ```
 
-```bash
-uvx azure-pipeline-validator --help
-```
+   - Windows (PowerShell)
+     ```powershell
+     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+     ```
+
+2. **Pick the validations you need** – nothing runs until you opt in:
+
+   - Lint-only (no Azure creds needed):
+
+     ```bash
+     uvx azure-pipeline-validator --lint .
+     ```
+
+   - Schema check (downloads the public schema anonymously):
+
+     ```bash
+     uvx azure-pipeline-validator --schema workflows/ci.yml
+     ```
+
+   - Preview (requires `AZDO_*` + `AZDO_PAT` because it calls your org):
+
+     ```bash
+     uvx azure-pipeline-validator --preview --schema workflows/
+     ```
+
+Short flags `-l`, `-s`, and `-p` map to `--lint`, `--schema`, and `--preview` if you prefer brevity, and you can combine them as needed.
 
 Global install with uv (install once, use anywhere):
 
@@ -71,7 +94,7 @@ Pip install will also work once published (`pip install azure-pipeline-validator
 
 ## Required environment
 
-Environment variables (or their CLI equivalents) are only required when schema or preview validation is enabled. Pure yamllint runs (`--skip-schema --skip-preview`) no longer need Azure credentials.
+Environment variables (or their CLI equivalents) are **only required when `--preview`/`-p` is enabled**. Lint (`--lint`/`-l`) and schema (`--schema`/`-s`) checks run entirely offline using the public schema.
 
 Export the same variables you would in an Azure Pipelines job, or pass them via the `--azdo-*` options:
 
@@ -84,29 +107,30 @@ Export the same variables you would in an Azure Pipelines job, or pass them via 
 | `AZDO_REFNAME` | Optional ref used when expanding templates (default `refs/heads/main`). |
 | `AZDO_TIMEOUT_SECONDS` | Optional HTTP timeout override (default 30). |
 
-> **Tip:** Inside Azure Pipelines you can skip `AZDO_PAT` by enabling “Allow scripts to access the OAuth token” and mapping it to `SYSTEM_ACCESSTOKEN`.
+> **Tips:**
+> - You can set variables inline without shell-specific syntax: `uvx azure-pipeline-validator AZDO_ORG=https://dev.azure.com/contoso AZDO_PROJECT=demo ...`
+> - Every Azure option also has a CLI flag, e.g. `uvx azure-pipeline-validator --azdo-org https://dev.azure.com/contoso --azdo-pat token workflows/`.
+> - Already signed in via `az devops login`? The cached PAT from the Azure CLI DevOps extension (or `AZURE_DEVOPS_EXT_PAT`) is picked up automatically.
+> - Inside Azure Pipelines you can skip `AZDO_PAT` by enabling “Allow scripts to access the OAuth token” and mapping it to `SYSTEM_ACCESSTOKEN`.
 
 ## Usage examples
 
-Validate the entire repo and show every check:
+Validate the entire repo with every check (requires `AZDO_*` + PAT):
 
 ```bash
-uv run azure-pipeline-validator validate . \
-  --repo-root $(pwd) \
-  --run-preview --run-schema --run-yamllint
+uv run azure-pipeline-validator --lint --schema --preview . --repo-root $(pwd)
 ```
 
-Validate a single template file and skip schema:
+Validate a single template file using only the schema:
 
 ```bash
-uv run azure-pipeline-validator validate common/templates/steps/build.yml \
-  --skip-schema
+uv run azure-pipeline-validator --schema common/templates/steps/build.yml
 ```
 
-Run preview only (fast structural checks off):
+Lint a directory quickly:
 
 ```bash
-uv run azure-pipeline-validator validate workflows/ --skip-yamllint --skip-schema
+uv run azure-pipeline-validator --lint workflows/
 ```
 
 ## CLI reference
@@ -121,9 +145,16 @@ Arguments:
 
 Options:
   --repo-root PATH                     Base path used when resolving template references (defaults to CWD).
-  --run-yamllint / --skip-yamllint     Enable or disable yamllint for fast structural checks.
-  --run-schema / --skip-schema         Validate against Microsoft's published YAML schema before previewing.
-  --run-preview / --skip-preview       Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.
+  --azdo-org URL                       Organization URL (overrides AZDO_ORG).
+  --azdo-project NAME                  Project name (overrides AZDO_PROJECT).
+  --azdo-pipeline-id ID                Pipeline ID used for preview (overrides AZDO_PIPELINE_ID).
+  --azdo-pat TOKEN                     PAT or OAuth token (overrides AZDO_PAT / SYSTEM_ACCESSTOKEN).
+  --azdo-ref-name REF                  Ref name for template expansion (overrides AZDO_REFNAME).
+  --azdo-timeout-seconds SECONDS       HTTP timeout override (overrides AZDO_TIMEOUT_SECONDS).
+  --lint / --no-lint, -l / --no-l      Run yamllint (aliases: --lint, -l). All checks are opt-in; lint is disabled by default.
+  --schema / --no-schema, -s / --no-s  Validate against Microsoft's published YAML schema (aliases: --schema, -s).
+  --preview / --no-preview, -p / --no-p
+                                       Call the Azure DevOps preview endpoint (aliases: --preview, -p).
   --fail-fast / --no-fail-fast         Stop immediately after the first file that fails validation.
   --help                               Show this message and exit.
 ```
@@ -159,7 +190,7 @@ Add a job that installs uv, exports `AZDO_*`, and runs the command. When running
 
     - script: |
         uv tool install azure-pipeline-validator
-        azure-pipeline-validator workflows/
+        azure-pipeline-validator --lint --schema --preview workflows/
       env:
         AZDO_ORG: $(System.TeamFoundationCollectionUri)
         AZDO_PROJECT: $(System.TeamProject)
@@ -171,6 +202,13 @@ Add a job that installs uv, exports `AZDO_*`, and runs the command. When running
 The preview call runs with `yamlOverride`, so no build is queued.
 
 ## Development workflow
+
+Local development (inside this repo):
+
+```bash
+cd /path/to/azure-pipeline-validator
+uv run azure-pipeline-validator --help
+```
 
 ```bash
 # Format and lint
@@ -250,7 +288,7 @@ For manual publishing, you'll need to set `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PA
 | `Set AZDO_PAT ... before running validation.` | Export `AZDO_PAT` or `SYSTEM_ACCESSTOKEN` so the preview call can authenticate. |
 | Preview API returns 401/403 | Confirm `AZDO_PIPELINE_ID` is correct and the PAT has Build Read & Execute permissions. |
 | Templates reference other repos/branches | Set `AZDO_REFNAME` appropriately; cross-repo templates may require additional repository resources in the payload. |
-| yamllint errors but schema/preview pass | Use `--skip-yamllint` temporarily if needed, though linting often surfaces indentation issues before Azure does. |
+| yamllint errors but schema/preview pass | Temporarily omit `--lint` if you need to focus on schema/preview issues, but try to fix lint problems quickly. |
 
 ---
 
@@ -259,13 +297,3 @@ Feel free to fork, contribute improvements, or publish your own build. This READ
 ## License
 
 `azure-pipeline-validator` is open source software released under the [MIT License](LICENSE). Contributions are welcome—just open an issue or pull request so we can review changes together.
-  --azdo-org URL                       Organization URL (overrides AZDO_ORG).
-  --azdo-project NAME                  Project name (overrides AZDO_PROJECT).
-  --azdo-pipeline-id ID                Pipeline ID used for preview (overrides
-                                       AZDO_PIPELINE_ID).
-  --azdo-pat TOKEN                     PAT or OAuth token (overrides AZDO_PAT /
-                                       SYSTEM_ACCESSTOKEN).
-  --azdo-ref-name REF                  Ref name for template expansion
-                                       (overrides AZDO_REFNAME).
-  --azdo-timeout-seconds SECONDS       HTTP timeout override (overrides
-                                       AZDO_TIMEOUT_SECONDS).

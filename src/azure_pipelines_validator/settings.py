@@ -8,6 +8,7 @@ from typing import Final
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
 
+from .azure_cli import discover_pat
 from .exceptions import SettingsError
 
 
@@ -39,16 +40,6 @@ class Settings(BaseModel):
         """Create settings by reading Azure DevOps variables or explicit overrides."""
 
         resolved_root = (repo_root or Path.cwd()).resolve()
-        token = (
-            personal_access_token
-            or os.getenv("AZDO_PAT")
-            or os.getenv("SYSTEM_ACCESSTOKEN")
-        )
-        if not token:
-            raise SettingsError(
-                "Set AZDO_PAT (or SYSTEM_ACCESSTOKEN) before running preview/schema validation."
-            )
-
         org_value = organization or os.getenv("AZDO_ORG")
         if not org_value:
             raise SettingsError("Environment variable AZDO_ORG is required")
@@ -74,6 +65,18 @@ class Settings(BaseModel):
         else:
             timeout_raw = os.getenv("AZDO_TIMEOUT_SECONDS")
             timeout_value = float(timeout_raw) if timeout_raw else AZURE_TIMEOUT_DEFAULT
+
+        token = (
+            personal_access_token
+            or os.getenv("AZDO_PAT")
+            or os.getenv("SYSTEM_ACCESSTOKEN")
+            or discover_pat(org_value)
+        )
+        if not token:
+            raise SettingsError(
+                "Preview validation requires AZDO_PAT (SYSTEM_ACCESSTOKEN) or an `az "
+                "devops login` session."
+            )
 
         return cls(
             organization=org_value,

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import re
+import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, MutableMapping, Sequence
 
 import typer
 from rich.console import Console
@@ -16,7 +19,8 @@ from .models import ValidationOptions
 from .reporter import Reporter
 from .schema_engine import SchemaValidator
 from .service import ValidationService
-from .settings import Settings
+from .schema_sources import download_public_schema
+from .settings import AZURE_TIMEOUT_DEFAULT, Settings
 from .yaml_processing import DocumentLoader, TemplateWrapper
 from .yamllint_engine import YamllintRunner
 
@@ -29,6 +33,37 @@ app = typer.Typer(
         "and the preview REST API so you see the exact `finalYaml` Azure would run."
     ),
 )
+
+
+_INLINE_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*=.*")
+
+
+def _consume_inline_env(
+    args: Sequence[str],
+    *,
+    environ: MutableMapping[str, str] | None = None,
+) -> list[str]:
+    """Apply KEY=VALUE style arguments to the environment.
+
+    Allows commands such as `azure-pipeline-validator AZDO_PAT=foo workflows/` so the
+    user does not need to preface the invocation with shell-specific `VAR=value`
+    syntax. Only bare KEY=VALUE tokens (no leading option flag) are interpreted to
+    avoid swallowing legitimate `--flag=value` options or file paths that contain an
+    equals sign.
+    """
+
+    remaining: list[str] = []
+    target_env = environ if environ is not None else os.environ
+    for token in args:
+        if token.startswith("--"):
+            remaining.append(token)
+            continue
+        if _INLINE_ENV_PATTERN.match(token):
+            key, value = token.split("=", 1)
+            target_env[key] = value
+            continue
+        remaining.append(token)
+    return remaining
 
 
 TargetArg = Annotated[
@@ -139,26 +174,32 @@ def validate(
         bool,
         typer.Option(
             "--run-yamllint / --skip-yamllint",
+            "--lint / --no-lint",
+            "-l / --no-l",
             rich_help_panel="Validation toggles",
-            help="Enable or disable yamllint for fast structural checks.",
+            help="Run yamllint (aliases: --lint, -l).",
         ),
-    ] = True,
+    ] = False,
     run_schema: Annotated[
         bool,
         typer.Option(
             "--run-schema / --skip-schema",
+            "--schema / --no-schema",
+            "-s / --no-s",
             rich_help_panel="Validation toggles",
-            help="Validate against Microsoft's published YAML schema before previewing.",
+            help="Validate against Microsoft's published YAML schema (aliases: --schema, -s).",
         ),
-    ] = True,
+    ] = False,
     run_preview: Annotated[
         bool,
         typer.Option(
             "--run-preview / --skip-preview",
+            "--preview / --no-preview",
+            "-p / --no-p",
             rich_help_panel="Validation toggles",
-            help="Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.",
+            help="Call the Azure DevOps preview endpoint (aliases: --preview, -p).",
         ),
-    ] = True,
+    ] = False,
     fail_fast: Annotated[
         bool,
         typer.Option(
@@ -179,10 +220,15 @@ def validate(
 
     console = Console()
     effective_repo_root = (repo_root or Path.cwd()).resolve()
-    requires_azure = run_schema or run_preview
+
+    if not any((run_yamllint, run_schema, run_preview)):
+        console.print(
+            "[bold yellow]Select at least one validation toggle (e.g. --lint/-l, --schema/-s, --preview/-p)."
+        )
+        raise typer.Exit(code=2)
 
     settings = None
-    if requires_azure:
+    if run_preview:
         try:
             settings = Settings.from_environment(
                 repo_root=effective_repo_root,
@@ -208,8 +254,27 @@ def validate(
 
     with client_context as client:
         schema_validator = None
-        if run_schema and client is not None:
-            schema_validator = SchemaValidator(client.download_schema)
+        if run_schema:
+            schema_supplier = None
+            if client is not None:
+                schema_supplier = client.download_schema
+            else:
+                timeout_override = (
+                    settings.request_timeout_seconds
+                    if settings is not None
+                    else (
+                        float(azdo_timeout_seconds)
+                        if azdo_timeout_seconds is not None
+                        else AZURE_TIMEOUT_DEFAULT
+                    )
+                )
+
+                def _download_schema() -> str:
+                    return download_public_schema(timeout_override)
+
+                schema_supplier = _download_schema
+
+            schema_validator = SchemaValidator(schema_supplier)
         service = ValidationService(
             client=client,
             scanner=scanner,
@@ -234,3 +299,15 @@ def validate(
     reporter.display(summary)
     if not summary.success:
         raise typer.Exit(code=1)
+
+
+def main() -> None:
+    """Entry point used by the console script."""
+
+    new_args = _consume_inline_env(sys.argv[1:])
+    sys.argv = [sys.argv[0], *new_args]
+    app()
+
+
+if __name__ == "__main__":  # pragma: no cover - manual execution helper
+    main()

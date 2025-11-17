@@ -188,7 +188,7 @@ def test_cli_passes_exclude_patterns(monkeypatch, tmp_path: Path) -> None:
     captured: list[str] = []
     original_collect = cli.FileScanner.collect
 
-    def spy_collect(self, path: Path):  # type: ignore[no-untyped-def]
+    def spy_collect(self, path: Path) -> tuple[Path, ...]:
         captured[:] = list(self.exclude_patterns)
         return original_collect(self, path)
 

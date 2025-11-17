@@ -37,6 +37,7 @@ The CLI understands both single files and whole repositories, wraps templates au
 - **Rich reporting** – console output shows pass/fail per file with the first offending message per stage.
 - **Toggleable stages** – disable lint/schema/preview individually for quick iteration.
 - **Failure ergonomics** – `--fail-fast` stops on first failure; exit codes are 0 (success) or 1 (any failures/API issues).
+- **Selective scanning** – `--exclude` / `-x` lets you skip generated folders or files with glob patterns.
 - **UV-native** – built with [uv](https://docs.astral.sh/uv/), so you can run it via `uv run`, `uvx`, or install it as a global tool.
 
 ## Installation & invocation
@@ -144,6 +145,12 @@ Lint a directory quickly:
 uv run azure-pipeline-validator --lint workflows/
 ```
 
+Skip generated templates while linting:
+
+```bash
+uv run azure-pipeline-validator --lint workflows/ --exclude "workflows/generated"
+```
+
 ## CLI reference
 
 ```text
@@ -167,6 +174,7 @@ Options:
   --preview / --no-preview, -p / --no-p
                                        Call the Azure DevOps preview endpoint (aliases: --preview, -p).
   --fail-fast / --no-fail-fast         Stop immediately after the first file that fails validation.
+  --exclude PATTERN                    Glob pattern or relative path to skip during scanning. Repeat the option to exclude multiple files/directories.
   --help                               Show this message and exit.
 ```
 

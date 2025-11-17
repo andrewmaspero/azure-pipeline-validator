@@ -41,3 +41,35 @@ def test_collect_missing_path(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         scanner.collect(missing)
+
+
+def test_exclude_directory(tmp_path: Path) -> None:
+    included_dir = tmp_path / "keep"
+    included_dir.mkdir()
+    included_file = included_dir / "keep.yml"
+    included_file.write_text("jobs: []", encoding="utf-8")
+    excluded_dir = tmp_path / "skip"
+    excluded_dir.mkdir()
+    excluded_file = excluded_dir / "skip.yml"
+    excluded_file.write_text("jobs: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, exclude_patterns=("skip",))
+
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (included_file.resolve(),)
+
+
+def test_exclude_glob_pattern(tmp_path: Path) -> None:
+    keep = tmp_path / "nested" / "ok" / "pipe.yml"
+    keep.parent.mkdir(parents=True)
+    keep.write_text("jobs: []", encoding="utf-8")
+    skip = tmp_path / "nested" / "generated" / "auto.yml"
+    skip.parent.mkdir(parents=True)
+    skip.write_text("jobs: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, exclude_patterns=("**/generated/*.yml",))
+
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (keep.resolve(),)

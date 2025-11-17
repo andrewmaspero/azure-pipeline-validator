@@ -164,6 +164,21 @@ AzureTimeoutOption = Annotated[
     ),
 ]
 
+ExcludePatternOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--exclude",
+        "-x",
+        metavar="PATTERN",
+        show_default=False,
+        rich_help_panel="Execution control",
+        help=(
+            "Glob pattern or relative path to skip during scanning. "
+            "Repeat the option to exclude multiple files/directories."
+        ),
+    ),
+]
+
 
 @app.command(help="Run yamllint, schema validation, and Azure preview against YAML files.")
 def validate(
@@ -213,6 +228,7 @@ def validate(
             help="Stop immediately after the first file that fails validation.",
         ),
     ] = False,
+    exclude: ExcludePatternOption = None,
 ) -> None:
     """Validate Azure Pipelines YAML locally before committing.
 
@@ -249,7 +265,7 @@ def validate(
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=2) from error
 
-    scanner = FileScanner(effective_repo_root)
+    scanner = FileScanner(effective_repo_root, exclude_patterns=exclude)
     loader = DocumentLoader()
     wrapper = TemplateWrapper(repo_root=effective_repo_root)
     yamllint_runner = YamllintRunner() if run_yamllint else None

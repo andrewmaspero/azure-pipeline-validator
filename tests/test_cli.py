@@ -181,6 +181,37 @@ def test_cli_yamllint_only_runs_without_env(tmp_path: Path) -> None:
     assert "Validated" in result.stdout
 
 
+def test_cli_passes_exclude_patterns(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    captured: list[str] = []
+    original_collect = cli.FileScanner.collect
+
+    def spy_collect(self, path: Path):  # type: ignore[no-untyped-def]
+        captured[:] = list(self.exclude_patterns)
+        return original_collect(self, path)
+
+    monkeypatch.setattr(cli.FileScanner, "collect", spy_collect, raising=False)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "validate",
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--lint",
+            "--exclude",
+            "skip/me.yml",
+        ],
+        env={},
+    )
+
+    assert result.exit_code == 0
+    assert captured == ["skip/me.yml"]
+
+
 def test_cli_requires_toggle(tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,

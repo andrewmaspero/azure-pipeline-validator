@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.4](https://github.com/andrewmaspero/azure-pipeline-validator/compare/v0.1.3...v0.1.4) (2026-03-03)
+
+
+### Bug Fixes
+
+* **ci:** harden publish workflow python shell execution ([1799835](https://github.com/andrewmaspero/azure-pipeline-validator/commit/17998358312f681fb5b618cb9d9a6412741a212d))
+* **ci:** remove fragile heredocs in publish version checks ([cc7b026](https://github.com/andrewmaspero/azure-pipeline-validator/commit/cc7b02666ba4d582e5b60b12efa15eaafe431508))
+* **ci:** repair publish workflow YAML heredoc parsing ([836bcad](https://github.com/andrewmaspero/azure-pipeline-validator/commit/836bcad6f6ff534f3530b7c159dbd4930bea5266))
+* **ci:** repair publish workflow YAML heredoc parsing ([9766422](https://github.com/andrewmaspero/azure-pipeline-validator/commit/97664225d74d7f0e3d83916ecb24b62475b52dc1))
+* **ci:** serialize publish runs and centralize version resolution ([0954c59](https://github.com/andrewmaspero/azure-pipeline-validator/commit/0954c59a205766dc30bcf1b05038cfab35cecd1c))
+* **ci:** stop release churn and publish from main pushes ([f7cf046](https://github.com/andrewmaspero/azure-pipeline-validator/commit/f7cf0465237805a7d899d904d4d2d77d8160791c))
+* **ci:** stop release churn and publish from main pushes ([b401ba4](https://github.com/andrewmaspero/azure-pipeline-validator/commit/b401ba4ec02c6143f30991f450896f5bb868da99))
+* hidden Azure pipeline discovery and improve validator UX ([#3](https://github.com/andrewmaspero/azure-pipeline-validator/issues/3)) ([4df85de](https://github.com/andrewmaspero/azure-pipeline-validator/commit/4df85deb9314607abc3eddddcadbdd1a76fd1eac))
+* **review:** address final review findings and harden validator checks ([e7592fb](https://github.com/andrewmaspero/azure-pipeline-validator/commit/e7592fb5706052958ef0b5139f6128443859fda7))
+* **review:** apply inline workflow and runtime reliability feedback ([2c813a1](https://github.com/andrewmaspero/azure-pipeline-validator/commit/2c813a13020b7b320afb194812f60253e651506a))
+* **review:** apply README, vscode error handling, and workflow nitpicks ([d210084](https://github.com/andrewmaspero/azure-pipeline-validator/commit/d21008484f210e2e648f3d7abc2b821a1b6cf881))
+
 ## [0.1.3](https://github.com/andrewmaspero/azure-pipeline-validator/compare/v0.1.2...v0.1.3) (2026-03-03)
 
 

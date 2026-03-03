@@ -1,7 +1,7 @@
 [project]
 name = "azure-pipeline-validator"
 version = "0.1.0"
-description = "Comprehensive Azure DevOps YAML validator"
+description = "Validation-first Azure DevOps YAML validator with Azure preview and Azure LSP checks"
 readme = "README.md"
 requires-python = ">=3.13"
 authors = [{ name = "Andrew Maspero", email = "andrew@maspero.co" }]

@@ -14,7 +14,7 @@ from azure_pipelines_validator.models import (
     ValidationSummary,
     YamllintFinding,
 )
-from azure_pipelines_validator.reporter import Reporter
+from azure_pipelines_validator.reporter import REPORT_SCHEMA_VERSION, Reporter
 
 
 def test_reporter_renders_summary(tmp_path: Path) -> None:
@@ -29,7 +29,7 @@ def test_reporter_renders_summary(tmp_path: Path) -> None:
                 yamllint=tuple(),
                 schema=tuple(),
                 preview=tuple(),
-                vscode=tuple(),
+                lsp=tuple(),
                 final_yaml="trigger: none",
             ),
             FileValidationResult(
@@ -57,7 +57,7 @@ def test_reporter_renders_summary(tmp_path: Path) -> None:
                         level="error",
                     ),
                 ),
-                vscode=tuple(),
+                lsp=tuple(),
                 final_yaml=None,
             ),
         )
@@ -83,11 +83,11 @@ def test_reporter_renders_skipped_stage_in_text(tmp_path: Path) -> None:
                 yamllint=tuple(),
                 schema=tuple(),
                 preview=tuple(),
-                vscode=tuple(),
+                lsp=tuple(),
                 final_yaml="trigger: none",
             ),
         ),
-        include_vscode=False,
+        include_lsp=False,
     )
 
     reporter = Reporter(repo_root=tmp_path, console=console)
@@ -115,7 +115,7 @@ def test_reporter_json_output_contract(tmp_path: Path) -> None:
                         level=None,
                     ),
                 ),
-                vscode=tuple(),
+                lsp=tuple(),
                 final_yaml=None,
                 preview_error=True,
             ),
@@ -128,7 +128,7 @@ def test_reporter_json_output_contract(tmp_path: Path) -> None:
     reporter.display(summary, output_format="json")
 
     payload = json.loads(console.export_text())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == REPORT_SCHEMA_VERSION
     assert payload["summary"]["fail_fast"] is True
     assert payload["summary"]["stopped_early"] is True
     assert payload["summary"]["discovered_files"] == 3
@@ -151,11 +151,11 @@ def test_reporter_renders_warnings_in_text_and_json(tmp_path: Path) -> None:
                 yamllint=tuple(),
                 schema=tuple(),
                 preview=tuple(),
-                vscode=tuple(),
+                lsp=tuple(),
                 final_yaml="trigger: none",
             ),
         ),
-        warnings=("Schema stage is deprecated for Azure correctness; prefer preview+vscode.",),
+        warnings=("Schema stage is deprecated for Azure correctness; prefer preview+lsp.",),
     )
     reporter = Reporter(repo_root=tmp_path, console=console)
     reporter.display(summary)
@@ -184,7 +184,7 @@ def test_reporter_raises_on_unknown_output_format(tmp_path: Path) -> None:
                 yamllint=tuple(),
                 schema=tuple(),
                 preview=tuple(),
-                vscode=tuple(),
+                lsp=tuple(),
                 final_yaml="trigger: none",
             ),
         )

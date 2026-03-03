@@ -1,6 +1,6 @@
 # ![Azure Pipeline Validator](https://img.shields.io/static/v1?label=&message=Azure%20Pipeline%20Validator&color=1D4ED8&style=for-the-badge&logo=azuredevops&logoColor=white)
 
-Local-first Azure DevOps YAML validation with Azure-authoritative checks by default.
+Local-first Azure DevOps YAML validation with Azure-authoritative checks and Azure LSP parity by default.
 
 <div align="left">
   <table>
@@ -22,7 +22,7 @@ Local-first Azure DevOps YAML validation with Azure-authoritative checks by defa
         <img src="https://img.shields.io/badge/Test-Pytest-0A9EDC?style=flat&logo=pytest&logoColor=white" alt="Pytest" />
         <img src="https://img.shields.io/badge/PM-uv-DE5FE9?style=flat&logo=astral&logoColor=white" alt="uv" />
         <img src="https://img.shields.io/badge/Validation-Azure%20Preview-2563EB?style=flat&logo=azuredevops&logoColor=white" alt="Azure preview" />
-        <img src="https://img.shields.io/badge/Validation-VS%20Code%20LSP-007ACC?style=flat&logo=visualstudiocode&logoColor=white" alt="VS Code" />
+        <img src="https://img.shields.io/badge/Validation-Azure%20LSP-007ACC?style=flat&logo=azuredevops&logoColor=white" alt="Azure LSP" />
       </td>
     </tr>
     <tr>
@@ -60,7 +60,7 @@ uvx azure-pipeline-validator validate --help
 | Feature Badge | Details |
 | --- | --- |
 | ![Preview](https://img.shields.io/badge/Azure%20Preview-Authoritative-2563EB?style=flat&logo=azuredevops&logoColor=white) | Calls Azure DevOps pipeline preview API and returns real `validationResults` and `finalYaml`. |
-| ![VSCode](https://img.shields.io/badge/VS%20Code-Language%20Server-007ACC?style=flat&logo=visualstudiocode&logoColor=white) | Runs the Azure Pipelines extension language server for diagnostics aligned with editor behavior. |
+| ![LSP](https://img.shields.io/badge/Azure%20LSP-Language%20Server-007ACC?style=flat&logo=azuredevops&logoColor=white) | Runs the Azure DevOps pipeline language server (LSP) for diagnostics aligned with editor behavior. |
 | ![Gate](https://img.shields.io/badge/Gate%20Mode-authoritative%7Call-1F2937?style=flat&logo=simpleicons&logoColor=white) | Default gate mode is `authoritative`; optional strict mode is `all`. |
 | ![Yamllint](https://img.shields.io/badge/yamllint-Advisory-0EA5E9?style=flat&logo=yaml&logoColor=white) | Optional style and structure checks, disabled by default. |
 | ![Schema](https://img.shields.io/badge/Schema-Deprecated%20Advisory-F59E0B?style=flat&logo=json&logoColor=white) | Generic schema checks remain available via `--run-schema` with deprecation warning. |
@@ -81,18 +81,22 @@ uvx azure-pipeline-validator validate --help
 | `AZDO_REFNAME` | no | `refs/heads/main` | string | Git ref used while expanding templates during preview. |
 | `AZDO_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for Azure preview API calls. |
 
-### ![VS Code Assets](https://img.shields.io/badge/VS%20Code-assets%20and%20cache-007ACC?style=for-the-badge&logo=visualstudiocode&logoColor=white)
+### ![Azure LSP Assets](https://img.shields.io/badge/Azure%20LSP-assets%20and%20cache-007ACC?style=for-the-badge&logo=azuredevops&logoColor=white)
 
 | Name | Required | Default | Format | Description |
 | --- | --- | --- | --- | --- |
-| `AZP_VALIDATOR_VSCODE_OFFLINE` | no | `false` | boolean | Forces cache-only VS Code asset usage. |
-| `AZP_VALIDATOR_VSCODE_CACHE_DIR` | no | `~/.azure-pipeline-validator/vscode-assets` | path | Cache directory for extension artifacts. |
-| `AZP_VALIDATOR_VSCODE_VERSION` | no | `latest` | string | Pins downloaded Azure Pipelines extension version. |
-| `AZP_VALIDATOR_VSCODE_SHA256` | no | - | hex | Optional checksum verification for extension download. |
-| `AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for extension download operations. |
+| `AZP_VALIDATOR_LSP_OFFLINE` | no | `false` | boolean | Forces cache-only Azure LSP asset usage. |
+| `AZP_VALIDATOR_LSP_CACHE_DIR` | no | `~/.azure-pipeline-validator/lsp-assets` | path | Cache directory for language-server assets. |
+| `AZP_VALIDATOR_LSP_VERSION` | no | `latest` | string | Pins downloaded Azure Pipelines language-server asset version. |
+| `AZP_VALIDATOR_LSP_SHA256` | no | - | hex | Optional checksum verification for language-server asset download. |
+| `AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for language-server asset download operations. |
+| `AZP_VALIDATOR_NODE_VERSION` | no | `lts` | string | Node.js version for auto-install (`lts`, `latest`, or exact semver). |
+| `AZP_VALIDATOR_NODE_CACHE_DIR` | no | `~/.azure-pipeline-validator/node-runtime` | path | Cache directory for downloaded Node.js runtimes. |
+| `AZP_VALIDATOR_NODE_DOWNLOAD_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for Node.js download operations. |
 
 Notes:
-- Default behavior runs `preview` and `vscode`; these require Azure credentials and Node runtime availability.
+- Default behavior runs `preview` and `lsp`; these require Azure credentials and a Node runtime.
+- If `node` is not present on `PATH`, the CLI auto-downloads a compatible Node runtime into the user cache.
 - `yamllint` and `schema` are advisory by default and disabled until explicitly enabled.
 - If both authoritative stages are disabled while `--gate-mode authoritative` is requested, gating falls back to `all` with a warning.
 
@@ -102,7 +106,7 @@ Notes:
 ```text
 Usage: azure-pipeline-validator validate [OPTIONS] [PATH]
 
-Run authoritative Azure validation by default (preview + vscode), with optional advisory yamllint/schema checks.
+Run authoritative Azure validation by default (preview + lsp), with optional advisory yamllint/schema stages.
 
 Arguments:
   PATH  File or directory to validate. Directories are scanned recursively for *.yml and *.yaml files.  [default: .]
@@ -112,14 +116,36 @@ Options:
   --run-yamllint / --skip-yamllint     Enable or disable optional advisory yamllint checks.  [default: skip-yamllint]
   --run-schema / --skip-schema         Enable or disable deprecated advisory schema checks.  [default: skip-schema]
   --run-preview / --skip-preview       Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.
-  --run-vscode / --skip-vscode         Validate via Azure Pipelines VS Code language server.
-  --vscode-server-path PATH            Path to extension server (dist/server.js).
-  --vscode-schema-path PATH            Path to extension schema (service-schema.json).
-  --vscode-timeout-seconds SECONDS     Diagnostics wait timeout per file.  [default: 5.0]
+  --run-lsp / --skip-lsp             Validate via Azure DevOps pipeline language server (LSP).
+  --lsp-server-path PATH             Path to language server entrypoint (dist/server.js).
+  --lsp-schema-path PATH             Path to language server schema (service-schema.json).
+  --lsp-timeout-seconds SECONDS     Diagnostics wait timeout per file.  [default: 5.0]
   --output-format FORMAT               Reporter output format.  [default: text]
   --gate-mode MODE                     Blocking policy for exit code: authoritative|all.  [default: authoritative]
+  --hidden-mode MODE                   Hidden directory discovery: common|all|none.  [default: common]
   --fail-fast / --no-fail-fast         Stop immediately after the first file that fails validation.
   --help                               Show this message and exit.
+```
+
+### Hidden directories
+
+Default hidden discovery mode is `common`, which auto-discovers Azure DevOps-oriented hidden directories such as
+`.azure-pipelines`, `.azure-pipeline`, `.azure-pipelines-templates`, `.azure-pipeline-templates`, `.azure_pipelines`, `.azure_pipeline`, `.azure_pipeline_templates`, `.azure`, `.azure-devops-pipelines`, `.azuredevops-pipelines`, `.azure_devops`, `.azure_devops_pipelines`, `.devops`, `.devops-pipelines`, `.devops-pipeline`, `.devops-templates`, `.devops-ci`, `.devops-cicd`, `.ado`, `.ado-pipelines`, `.ado-pipeline`, `.ado-templates`, `.azdo`, `.azdo-pipelines`, `.azdo-pipeline`, `.azdo-templates`, `.azuredevops`, `.azure-devops`, `.azpipelines`, `.azp`, `.azp-pipelines`, `.azp-templates`, `.pipelines`, `.pipeline`, `.pipelines-templates`, `.pipeline-templates`, `.release-pipelines`, `.build-pipelines`, `.ci`, `.cicd`, `.ci-cd`.
+
+Examples:
+
+```bash
+# default (common): includes common Azure DevOps hidden directories
+uv run azure-pipeline-validator validate . --repo-root $(pwd)
+
+# strict: skip hidden directories during directory scans
+uv run azure-pipeline-validator validate --hidden-mode none . --repo-root $(pwd)
+
+# broad: include all hidden directories (except hard exclusions like .git/.github)
+uv run azure-pipeline-validator validate --hidden-mode all . --repo-root $(pwd)
+
+# explicit hidden target is included in common mode
+uv run azure-pipeline-validator validate .devops/ --repo-root $(pwd)
 ```
 
 <a id="output-format"></a>
@@ -133,7 +159,7 @@ Example text output:
 
 ```text
 ╭──────────────────────┬──────────┬────────┬──────────────────────┬──────────────────────╮
-│ File                 │ yamllint │ schema │ preview              │ vscode               │
+│ File                 │ yamllint │ schema │ preview              │ lsp                  │
 ├──────────────────────┼──────────┼────────┼──────────────────────┼──────────────────────┤
 │ workflows/ci.yml     │ pass     │ skip   │ pass                 │ pass                 │
 │ workflows/deploy.yml │ skip     │ skip   │ pass                 │ L12 C9: pattern ...  │
@@ -191,7 +217,7 @@ uvx --from pydocstyle pydocstyle --convention=google src
 ## ![Operations](https://img.shields.io/badge/Operations-Runbook-10B981?style=for-the-badge&logo=serverfault&logoColor=white)
 
 - Validate a repo quickly: `uv run azure-pipeline-validator validate . --repo-root $(pwd)`
-- Authoritative-only gate (default): preview and vscode determine exit code.
+- Authoritative-only gate (default): preview and lsp determine exit code.
 - Strict all-stage gate: `--run-yamllint --run-schema --gate-mode all`
 - Fail fast for CI cost control: add `--fail-fast`.
 - Treat schema warnings as advisory; schema stage is soft-deprecated for Azure correctness.
@@ -202,7 +228,7 @@ uvx --from pydocstyle pydocstyle --convention=google src
 - CLI and orchestration: Typer-based command surface and validation service pipeline.
 - Azure-authoritative engines:
   - Azure DevOps Preview API (`yamlOverride` against existing pipeline definition).
-  - Azure Pipelines VS Code language server diagnostics.
+  - Azure DevOps pipeline language server (LSP) diagnostics.
 - Advisory engines:
   - `yamllint` for style and structure.
   - JSON schema checks for generic coverage.
@@ -216,10 +242,10 @@ uvx --from pydocstyle pydocstyle --convention=google src
 
 - Symptom: many Red Hat YAML warnings but one Azure error.
   - Cause: generic YAML schema validation and Azure template semantics diverge.
-  - Action: rely on `preview` and `vscode` as source of truth for Azure correctness.
-- Symptom: VS Code validator cannot start.
-  - Cause: missing Node binary or unavailable extension assets.
-  - Action: ensure Node is installed and pass `--vscode-server-path` and `--vscode-schema-path` if needed.
+  - Action: rely on `preview` and `lsp` as source of truth for Azure correctness.
+- Symptom: Azure LSP stage cannot start.
+  - Cause: unavailable Node runtime or language-server assets.
+  - Action: rerun with network access so runtime/assets can auto-bootstrap, or provide `--lsp-server-path` and `--lsp-schema-path` plus a valid Node binary.
 - Symptom: preview failures in CI.
   - Cause: missing Azure credentials or insufficient PAT scope.
   - Action: ensure `AZDO_*` values are present and token has Build Read and Execute permissions.

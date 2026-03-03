@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,23 +12,27 @@ from urllib.error import URLError
 
 import pytest
 
-from azure_pipelines_validator.exceptions import VscodeValidationError
-from azure_pipelines_validator.models import VscodeFinding, YamlKind
-from azure_pipelines_validator.vscode_engine import (
-    VscodeValidator,
+from azure_pipelines_validator.exceptions import LspValidationError
+from azure_pipelines_validator.lsp_engine import (
+    LspValidator,
     _bootstrap_extension_assets,
+    _detect_node_platform_key,
     _discover_installed_extension,
     _env_flag,
     _env_float,
     _extract_version_key,
+    _install_node_runtime,
     _LspSession,
     _resolve_bootstrapped_extension,
+    _resolve_node_binary,
+    _resolve_node_version,
     _resolve_server_and_schema,
     _severity_label,
     _try_parse_message,
     _validate_paths,
     _wait_for_fd,
 )
+from azure_pipelines_validator.models import LspFinding, YamlKind
 from azure_pipelines_validator.yaml_processing import YamlDocument
 
 
@@ -41,6 +47,17 @@ def _make_vsix_bytes(*, include_required_files: bool = True) -> bytes:
     return stream.getvalue()
 
 
+def _make_node_tar_xz_bytes(base_name: str) -> bytes:
+    stream = io.BytesIO()
+    payload = b"#!/bin/sh\nnode --version\n"
+    with tarfile.open(fileobj=stream, mode="w:xz") as archive:
+        node_info = tarfile.TarInfo(name=f"{base_name}/bin/node")
+        node_info.size = len(payload)
+        node_info.mode = 0o755
+        archive.addfile(node_info, io.BytesIO(payload))
+    return stream.getvalue()
+
+
 def test_extract_version_key_parses_semver() -> None:
     assert _extract_version_key("ms-azure-devops.azure-pipelines-1.261.1") == (1, 261, 1)
 
@@ -50,29 +67,29 @@ def test_extract_version_key_falls_back_when_missing() -> None:
 
 
 def test_env_flag_truthy_and_falsey(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AZP_VALIDATOR_VSCODE_OFFLINE", raising=False)
-    assert _env_flag("AZP_VALIDATOR_VSCODE_OFFLINE") is False
+    monkeypatch.delenv("AZP_VALIDATOR_LSP_OFFLINE", raising=False)
+    assert _env_flag("AZP_VALIDATOR_LSP_OFFLINE") is False
 
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_OFFLINE", "  YES ")
-    assert _env_flag("AZP_VALIDATOR_VSCODE_OFFLINE") is True
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_OFFLINE", "  YES ")
+    assert _env_flag("AZP_VALIDATOR_LSP_OFFLINE") is True
 
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_OFFLINE", "0")
-    assert _env_flag("AZP_VALIDATOR_VSCODE_OFFLINE") is False
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_OFFLINE", "0")
+    assert _env_flag("AZP_VALIDATOR_LSP_OFFLINE") is False
 
 
 def test_env_float_default_and_valid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", raising=False)
-    assert _env_float("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", 10.0) == 10.0
+    monkeypatch.delenv("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", raising=False)
+    assert _env_float("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", 10.0) == 10.0
 
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", "2.5")
-    assert _env_float("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", 10.0) == 2.5
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", "2.5")
+    assert _env_float("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", 10.0) == 2.5
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1"])
 def test_env_float_rejects_invalid(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", raw)
-    with pytest.raises(VscodeValidationError):
-        _env_float("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", 10.0)
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", raw)
+    with pytest.raises(LspValidationError):
+        _env_float("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", 10.0)
 
 
 def test_severity_label_mapping() -> None:
@@ -88,11 +105,11 @@ def test_validate_paths_raises_for_missing_files(tmp_path: Path) -> None:
     schema = tmp_path / "service-schema.json"
     server.parent.mkdir(parents=True)
 
-    with pytest.raises(VscodeValidationError, match="language server not found"):
+    with pytest.raises(LspValidationError, match="language server not found"):
         _validate_paths(server, schema)
 
     server.write_text("// test", encoding="utf-8")
-    with pytest.raises(VscodeValidationError, match="schema file not found"):
+    with pytest.raises(LspValidationError, match="schema file not found"):
         _validate_paths(server, schema)
 
 
@@ -117,7 +134,7 @@ def test_resolve_server_and_schema_requires_real_files(tmp_path: Path) -> None:
     schema = tmp_path / "service-schema.json"
     schema.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(VscodeValidationError):
+    with pytest.raises(LspValidationError):
         _resolve_server_and_schema(server_path=missing_server, schema_path=schema)
 
 
@@ -127,7 +144,7 @@ def test_resolve_server_and_schema_requires_both_override_paths(tmp_path: Path) 
     server.write_text("// test", encoding="utf-8")
 
     with pytest.raises(
-        VscodeValidationError, match="Pass both --vscode-server-path and --vscode-schema-path"
+        LspValidationError, match="Pass both --lsp-server-path and --lsp-schema-path"
     ):
         _resolve_server_and_schema(server_path=server, schema_path=None)
 
@@ -142,7 +159,7 @@ def test_resolve_server_and_schema_prefers_discovered_install(
     schema.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._discover_installed_extension",
+        "azure_pipelines_validator.lsp_engine._discover_installed_extension",
         lambda: (server, schema),
     )
 
@@ -153,7 +170,7 @@ def test_resolve_server_and_schema_prefers_discovered_install(
         return server, schema
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._resolve_bootstrapped_extension",
+        "azure_pipelines_validator.lsp_engine._resolve_bootstrapped_extension",
         _should_not_call,
     )
 
@@ -171,11 +188,11 @@ def test_resolve_server_and_schema_bootstraps_when_not_installed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._discover_installed_extension",
+        "azure_pipelines_validator.lsp_engine._discover_installed_extension",
         lambda: None,
     )
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_VERSION", "test-version")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_VERSION", "test-version")
 
     def _fake_bootstrap(
         *, download_url: str, cache_dir: Path, timeout_seconds: float, expected_sha256: str | None
@@ -188,7 +205,7 @@ def test_resolve_server_and_schema_bootstraps_when_not_installed(
         schema.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._bootstrap_extension_assets",
+        "azure_pipelines_validator.lsp_engine._bootstrap_extension_assets",
         _fake_bootstrap,
     )
 
@@ -212,20 +229,20 @@ def test_resolve_server_and_schema_respects_offline_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._discover_installed_extension",
+        "azure_pipelines_validator.lsp_engine._discover_installed_extension",
         lambda: None,
     )
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_OFFLINE", "true")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_OFFLINE", "true")
 
-    with pytest.raises(VscodeValidationError, match="offline mode is enabled"):
+    with pytest.raises(LspValidationError, match="offline mode is enabled"):
         _resolve_server_and_schema(server_path=None, schema_path=None)
 
 
 def test_resolve_bootstrapped_extension_uses_cached_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_CACHE_DIR", str(tmp_path))
     cache_dir = tmp_path / "ms-azure-devops.azure-pipelines" / "latest"
     server = cache_dir / "dist" / "server.js"
     schema = cache_dir / "service-schema.json"
@@ -242,12 +259,12 @@ def test_resolve_bootstrapped_extension_uses_cached_assets(
 def test_resolve_bootstrapped_extension_bootstrap_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_PUBLISHER", "publisher")
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_EXTENSION", "extension")
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_VERSION", "1.2.3")
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_SHA256", "abc123")
-    monkeypatch.setenv("AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS", "11")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_PUBLISHER", "publisher")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_EXTENSION", "extension")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_VERSION", "1.2.3")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_SHA256", "abc123")
+    monkeypatch.setenv("AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS", "11")
 
     captured: dict[str, object] = {}
 
@@ -263,10 +280,10 @@ def test_resolve_bootstrapped_extension_bootstrap_arguments(
     expected_schema = tmp_path / "publisher.extension" / "1.2.3" / "service-schema.json"
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._bootstrap_extension_assets", _fake_bootstrap
+        "azure_pipelines_validator.lsp_engine._bootstrap_extension_assets", _fake_bootstrap
     )
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._validate_paths",
+        "azure_pipelines_validator.lsp_engine._validate_paths",
         lambda server_path, schema_path: (server_path, schema_path),
     )
 
@@ -307,7 +324,7 @@ def test_bootstrap_extension_assets_extracts_files(
 
     payload = _make_vsix_bytes()
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.urlopen",
+        "azure_pipelines_validator.lsp_engine.urlopen",
         lambda *_args, **_kwargs: _Response(payload),
     )
 
@@ -330,9 +347,9 @@ def test_bootstrap_extension_assets_wraps_download_error(
     def _raise(*_args, **_kwargs):
         raise URLError("no network")
 
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.urlopen", _raise)
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _raise)
 
-    with pytest.raises(VscodeValidationError, match="Unable to download"):
+    with pytest.raises(LspValidationError, match="Unable to download"):
         _bootstrap_extension_assets(
             download_url="https://example.invalid/vsix",
             cache_dir=cache_dir,
@@ -357,11 +374,11 @@ def test_bootstrap_extension_assets_detects_checksum_mismatch(
             return _make_vsix_bytes()
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.urlopen",
+        "azure_pipelines_validator.lsp_engine.urlopen",
         lambda *_args, **_kwargs: _Response(),
     )
 
-    with pytest.raises(VscodeValidationError, match="checksum mismatch"):
+    with pytest.raises(LspValidationError, match="checksum mismatch"):
         _bootstrap_extension_assets(
             download_url="https://example.invalid/vsix",
             cache_dir=cache_dir,
@@ -386,11 +403,11 @@ def test_bootstrap_extension_assets_rejects_invalid_archive(
             return _make_vsix_bytes(include_required_files=False)
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.urlopen",
+        "azure_pipelines_validator.lsp_engine.urlopen",
         lambda *_args, **_kwargs: _Response(),
     )
 
-    with pytest.raises(VscodeValidationError, match="missing required files"):
+    with pytest.raises(LspValidationError, match="missing required files"):
         _bootstrap_extension_assets(
             download_url="https://example.invalid/vsix",
             cache_dir=cache_dir,
@@ -415,10 +432,10 @@ def test_try_parse_message_happy_path() -> None:
 def test_try_parse_message_partial_or_missing_headers() -> None:
     assert _try_parse_message(bytearray(b"no headers")) is None
 
-    with pytest.raises(VscodeValidationError, match="Missing Content-Length"):
+    with pytest.raises(LspValidationError, match="Missing Content-Length"):
         _try_parse_message(bytearray(b"Header: x\r\n\r\n{}"))
 
-    with pytest.raises(VscodeValidationError, match="Invalid content-length"):
+    with pytest.raises(LspValidationError, match="Invalid content-length"):
         _try_parse_message(bytearray(b"Content-Length: nan\r\n\r\n{}"))
 
     body = b'{"jsonrpc":"2.0"}'
@@ -427,13 +444,13 @@ def test_try_parse_message_partial_or_missing_headers() -> None:
 
 def test_wait_for_fd_delegates_to_select(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.select.select",
+        "azure_pipelines_validator.lsp_engine.select.select",
         lambda *_args, **_kwargs: ([1], [], []),
     )
     assert _wait_for_fd(1, 0.1) is True
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.select.select",
+        "azure_pipelines_validator.lsp_engine.select.select",
         lambda *_args, **_kwargs: ([], [], []),
     )
     assert _wait_for_fd(1, 0.1) is False
@@ -441,10 +458,239 @@ def test_wait_for_fd_delegates_to_select(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_wait_for_fd_falls_back_to_true_on_select_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.select.select",
+        "azure_pipelines_validator.lsp_engine.select.select",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unsupported")),
     )
     assert _wait_for_fd(1, 0.1) is True
+
+
+def test_resolve_node_binary_uses_path_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine.shutil.which", lambda _: "/usr/bin/node"
+    )
+    assert _resolve_node_binary("node") == "/usr/bin/node"
+
+
+def test_resolve_node_binary_rejects_missing_explicit_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.shutil.which", lambda _: None)
+    with pytest.raises(LspValidationError, match="was not found"):
+        _resolve_node_binary("custom-node")
+
+
+def test_resolve_node_binary_installs_default_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.shutil.which", lambda _: None)
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._install_node_runtime",
+        lambda **_kwargs: Path("/tmp/node-runtime/bin/node"),
+    )
+    assert _resolve_node_binary("node") == "/tmp/node-runtime/bin/node"
+
+
+def test_detect_node_platform_key_supports_common_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine.platform.machine",
+        lambda: "arm64",
+    )
+    assert _detect_node_platform_key() == "darwin-arm64"
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine.platform.machine",
+        lambda: "x86_64",
+    )
+    assert _detect_node_platform_key() == "linux-x64"
+
+
+def test_detect_node_platform_key_rejects_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.platform.system", lambda: "Plan9")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine.platform.machine",
+        lambda: "mips",
+    )
+    with pytest.raises(LspValidationError, match="not supported"):
+        _detect_node_platform_key()
+
+
+def test_resolve_node_version_variants(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _resolve_node_version("22.13.1", timeout_seconds=1.0) == "22.13.1"
+    assert _resolve_node_version("v22.13.1", timeout_seconds=1.0) == "22.13.1"
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type, exc, exc_tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                [
+                    {"version": "v23.1.0", "lts": False},
+                    {"version": "v22.14.0", "lts": "Jod"},
+                ]
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine.urlopen",
+        lambda *_args, **_kwargs: _Response(),
+    )
+    assert _resolve_node_version("latest", timeout_seconds=1.0) == "23.1.0"
+    assert _resolve_node_version("lts", timeout_seconds=1.0) == "22.14.0"
+
+
+def test_install_node_runtime_uses_cached_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_version",
+        lambda *_args, **_kwargs: "22.14.0",
+    )
+    cached = tmp_path / "node-v22.14.0" / "linux-x64" / "bin" / "node"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    assert (
+        _install_node_runtime(
+            version_spec="lts",
+            cache_root=tmp_path,
+            timeout_seconds=1.0,
+        )
+        == cached.resolve()
+    )
+
+
+def test_install_node_runtime_uses_cached_alias_binary_when_network_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+
+    cached = tmp_path / "node-v22.14.0" / "linux-x64" / "bin" / "node"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def _raise_network_error(*_args, **_kwargs):
+        raise URLError("offline")
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _raise_network_error)
+
+    assert (
+        _install_node_runtime(
+            version_spec="lts",
+            cache_root=tmp_path,
+            timeout_seconds=1.0,
+        )
+        == cached.resolve()
+    )
+
+
+def test_install_node_runtime_downloads_verifies_checksum_and_extracts_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_version",
+        lambda *_args, **_kwargs: "22.14.0",
+    )
+
+    base_name = "node-v22.14.0-linux-x64"
+    archive_name = f"{base_name}.tar.xz"
+    archive_bytes = _make_node_tar_xz_bytes(base_name)
+    archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    shasums = f"{archive_sha256}  {archive_name}\n".encode("utf-8")
+
+    class _Response:
+        def __init__(self, payload: bytes) -> None:
+            self._stream = io.BytesIO(payload)
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type, exc, exc_tb) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+    def _fake_urlopen(url: str, *args, **kwargs) -> _Response:
+        del args, kwargs
+        if url.endswith("SHASUMS256.txt"):
+            return _Response(shasums)
+        if url.endswith(archive_name):
+            return _Response(archive_bytes)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _fake_urlopen)
+
+    node_path = _install_node_runtime(
+        version_spec="22.14.0",
+        cache_root=tmp_path,
+        timeout_seconds=1.0,
+    )
+
+    expected = tmp_path / "node-v22.14.0" / "linux-x64" / "bin" / "node"
+    assert node_path == expected.resolve()
+    assert expected.exists()
+
+
+def test_install_node_runtime_rejects_checksum_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_version",
+        lambda *_args, **_kwargs: "22.14.0",
+    )
+
+    base_name = "node-v22.14.0-linux-x64"
+    archive_name = f"{base_name}.tar.xz"
+    archive_bytes = _make_node_tar_xz_bytes(base_name)
+    shasums = f"{'0' * 64}  {archive_name}\n".encode("utf-8")
+
+    class _Response:
+        def __init__(self, payload: bytes) -> None:
+            self._stream = io.BytesIO(payload)
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type, exc, exc_tb) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+    def _fake_urlopen(url: str, *args, **kwargs) -> _Response:
+        del args, kwargs
+        if url.endswith("SHASUMS256.txt"):
+            return _Response(shasums)
+        if url.endswith(archive_name):
+            return _Response(archive_bytes)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _fake_urlopen)
+
+    with pytest.raises(LspValidationError, match="checksum mismatch"):
+        _install_node_runtime(
+            version_spec="22.14.0",
+            cache_root=tmp_path,
+            timeout_seconds=1.0,
+        )
 
 
 def test_handle_server_request_branches(tmp_path: Path) -> None:
@@ -504,7 +750,7 @@ def test_send_raises_when_stdin_missing() -> None:
     session = _LspSession.__new__(_LspSession)
     session._process = SimpleNamespace(stdin=None)
 
-    with pytest.raises(VscodeValidationError, match="stdin is unavailable"):
+    with pytest.raises(LspValidationError, match="stdin is unavailable"):
         session._send({"jsonrpc": "2.0"})
 
 
@@ -535,29 +781,35 @@ def test_send_writes_length_prefixed_payload() -> None:
     assert stdin.flushed is True
 
 
-def test_vscode_validator_init_and_properties(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lsp_validator_init_and_properties(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     server = tmp_path / "dist" / "server.js"
     schema = tmp_path / "service-schema.json"
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._resolve_server_and_schema",
+        "azure_pipelines_validator.lsp_engine._resolve_server_and_schema",
         lambda **_kwargs: (server, schema),
     )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_binary",
+        lambda _node_binary: "node",
+    )
 
-    validator = VscodeValidator(repo_root=tmp_path)
+    validator = LspValidator(repo_root=tmp_path)
 
     assert validator.server_path == server
     assert validator.schema_path == schema
 
 
-def test_vscode_validator_run_empty_short_circuits(
+def test_lsp_validator_run_empty_short_circuits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._resolve_server_and_schema",
+        "azure_pipelines_validator.lsp_engine._resolve_server_and_schema",
         lambda **_kwargs: (tmp_path / "dist" / "server.js", tmp_path / "service-schema.json"),
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_binary",
+        lambda _node_binary: "node",
     )
 
     called = {"entered": False}
@@ -573,22 +825,26 @@ def test_vscode_validator_run_empty_short_circuits(
         def __exit__(self, exc_type, exc, exc_tb) -> None:
             return None
 
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine._LspSession", _ShouldNotEnter)
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine._LspSession", _ShouldNotEnter)
 
-    validator = VscodeValidator(repo_root=tmp_path)
+    validator = LspValidator(repo_root=tmp_path)
     assert validator.run([]) == {}
     assert called["entered"] is False
 
 
-def test_vscode_validator_run_with_mocked_session(
+def test_lsp_validator_run_with_mocked_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     server = tmp_path / "dist" / "server.js"
     schema = tmp_path / "service-schema.json"
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._resolve_server_and_schema",
+        "azure_pipelines_validator.lsp_engine._resolve_server_and_schema",
         lambda **_kwargs: (server, schema),
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_binary",
+        lambda _node_binary: "node-resolved",
     )
 
     doc_a = YamlDocument(path=tmp_path / "a.yml", content="trigger: none", kind=YamlKind.PIPELINE)
@@ -596,7 +852,7 @@ def test_vscode_validator_run_with_mocked_session(
 
     findings = {
         doc_a.path: (
-            VscodeFinding(
+            LspFinding(
                 path=doc_a.path,
                 line=1,
                 column=1,
@@ -620,19 +876,19 @@ def test_vscode_validator_run_with_mocked_session(
         def __exit__(self, exc_type, exc, exc_tb) -> None:
             return None
 
-        def validate_document(self, document: YamlDocument) -> tuple[VscodeFinding, ...]:
+        def validate_document(self, document: YamlDocument) -> tuple[LspFinding, ...]:
             return findings[document.path]
 
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine._LspSession", _FakeSession)
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine._LspSession", _FakeSession)
 
-    validator = VscodeValidator(repo_root=tmp_path, timeout_seconds=12.0, node_binary="node-test")
+    validator = LspValidator(repo_root=tmp_path, timeout_seconds=12.0, node_binary="node-test")
     result = validator.run([doc_a, doc_b])
 
     assert captured["repo_root"] == tmp_path.resolve()
     assert captured["server_path"] == server
     assert captured["schema_path"] == schema
     assert captured["timeout_seconds"] == 12.0
-    assert captured["node_binary"] == "node-test"
+    assert captured["node_binary"] == "node-resolved"
     assert result == findings
 
 
@@ -645,11 +901,11 @@ def test_lsp_session_init_sets_state(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     process = SimpleNamespace(stdin=object(), stdout=object(), stderr=object())
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.subprocess.Popen",
+        "azure_pipelines_validator.lsp_engine.subprocess.Popen",
         lambda *a, **k: process,
     )
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._LspSession._initialize",
+        "azure_pipelines_validator.lsp_engine._LspSession._initialize",
         lambda self: None,
     )
 
@@ -680,11 +936,11 @@ def test_lsp_session_init_wraps_missing_node_binary(
     server.write_text("// server", encoding="utf-8")
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.subprocess.Popen",
+        "azure_pipelines_validator.lsp_engine.subprocess.Popen",
         lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("node missing")),
     )
 
-    with pytest.raises(VscodeValidationError, match="was not found"):
+    with pytest.raises(LspValidationError, match="was not found"):
         _LspSession(
             repo_root=tmp_path,
             server_path=server,
@@ -783,7 +1039,7 @@ def test_validate_document_success_and_timeout(tmp_path: Path) -> None:
     timeout_session._wait_for_diagnostics = lambda *_args: None
     timeout_session._drain_stderr = lambda: "stderr message"
 
-    with pytest.raises(VscodeValidationError, match="Timed out waiting for VS Code diagnostics"):
+    with pytest.raises(LspValidationError, match="Timed out waiting for Azure LSP diagnostics"):
         timeout_session.validate_document(doc)
 
 
@@ -809,7 +1065,7 @@ def test_initialize_sends_configuration_and_handles_error(tmp_path: Path) -> Non
     bad._schema_uri = "file:///schema.json"
     bad._send_request = lambda *_args: {"error": "boom"}
     bad._send_notification = lambda *_args: None
-    with pytest.raises(VscodeValidationError, match="initialize failed"):
+    with pytest.raises(LspValidationError, match="initialize failed"):
         bad._initialize()
 
 
@@ -851,8 +1107,8 @@ def test_send_request_success_and_timeout(monkeypatch: pytest.MonkeyPatch) -> No
     timeout_session._responses = {}
     timeout_session._send = lambda *_args: None
     timeout_session._pump_once = lambda *_args: None
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.time.monotonic", lambda: 1.0)
-    with pytest.raises(VscodeValidationError, match="Timed out waiting for LSP response"):
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.time.monotonic", lambda: 1.0)
+    with pytest.raises(LspValidationError, match="Timed out waiting for LSP response"):
         timeout_session._send_request("hover", {})
 
 
@@ -873,7 +1129,7 @@ def test_read_message_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     missing = _LspSession.__new__(_LspSession)
     missing._process = SimpleNamespace(stdout=None)
     missing._read_buffer = bytearray()
-    with pytest.raises(VscodeValidationError, match="stdout is unavailable"):
+    with pytest.raises(LspValidationError, match="stdout is unavailable"):
         missing._read_message(0.1)
 
     payload = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
@@ -889,7 +1145,7 @@ def test_read_message_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     no_ready._process = SimpleNamespace(stdout=SimpleNamespace(fileno=lambda: 11))
     no_ready._read_buffer = bytearray()
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._wait_for_fd",
+        "azure_pipelines_validator.lsp_engine._wait_for_fd",
         lambda *_args: False,
     )
     assert no_ready._read_message(0.1) is None
@@ -897,9 +1153,9 @@ def test_read_message_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     closed = _LspSession.__new__(_LspSession)
     closed._process = SimpleNamespace(stdout=SimpleNamespace(fileno=lambda: 12))
     closed._read_buffer = bytearray()
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine._wait_for_fd", lambda *_args: True)
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.os.read", lambda *_args: b"")
-    with pytest.raises(VscodeValidationError, match="closed unexpectedly"):
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine._wait_for_fd", lambda *_args: True)
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.os.read", lambda *_args: b"")
+    with pytest.raises(LspValidationError, match="closed unexpectedly"):
         closed._read_message(0.1)
 
 
@@ -918,11 +1174,11 @@ def test_drain_stderr_branches(monkeypatch: pytest.MonkeyPatch) -> None:
         return wait_calls["count"] == 1
 
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._wait_for_fd",
+        "azure_pipelines_validator.lsp_engine._wait_for_fd",
         _wait_once_then_stop,
     )
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine.os.read",
+        "azure_pipelines_validator.lsp_engine.os.read",
         lambda *_args: b"  message from stderr  ",
     )
     assert readable._drain_stderr() == "message from stderr"
@@ -930,7 +1186,7 @@ def test_drain_stderr_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     broken = _LspSession.__new__(_LspSession)
     broken._process = SimpleNamespace(stderr=SimpleNamespace(fileno=lambda: 2))
     monkeypatch.setattr(
-        "azure_pipelines_validator.vscode_engine._wait_for_fd",
+        "azure_pipelines_validator.lsp_engine._wait_for_fd",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("bad fd")),
     )
     assert broken._drain_stderr() == ""
@@ -939,15 +1195,15 @@ def test_drain_stderr_branches(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_discover_installed_extension_selects_latest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.Path.home", lambda: tmp_path)
     cursor_root = tmp_path / ".cursor" / "extensions"
-    vscode_root = tmp_path / ".vscode" / "extensions"
+    editor_extensions_root = tmp_path / ".vscode" / "extensions"
     cursor_root.mkdir(parents=True)
-    vscode_root.mkdir(parents=True)
+    editor_extensions_root.mkdir(parents=True)
 
     old = cursor_root / "ms-azure-devops.azure-pipelines-1.0.0"
-    new = vscode_root / "ms-azure-devops.azure-pipelines-2.0.0"
-    incomplete = vscode_root / "ms-azure-devops.azure-pipelines-3.0.0"
+    new = editor_extensions_root / "ms-azure-devops.azure-pipelines-2.0.0"
+    incomplete = editor_extensions_root / "ms-azure-devops.azure-pipelines-3.0.0"
     for candidate in (old, new, incomplete):
         (candidate / "dist").mkdir(parents=True)
     (old / "dist" / "server.js").write_text("// old", encoding="utf-8")

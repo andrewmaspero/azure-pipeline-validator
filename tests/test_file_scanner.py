@@ -4,35 +4,112 @@ from pathlib import Path
 
 import pytest
 
-from azure_pipelines_validator.file_scanner import FileScanner, iter_single_file
+from azure_pipelines_validator.file_scanner import (
+    COMMON_HIDDEN_DIRS,
+    FileScanner,
+    iter_single_file,
+)
 
 
-def test_collects_all_yaml_files(tmp_path: Path) -> None:
-    (tmp_path / "visible").mkdir()
-    file_one = tmp_path / "visible" / "pipe.yml"
-    file_one.write_text("stages: []", encoding="utf-8")
-    file_two = tmp_path / "visible" / "another.yaml"
-    file_two.write_text("jobs: []", encoding="utf-8")
-    hidden_dir = tmp_path / ".ignored"
-    hidden_dir.mkdir()
-    (hidden_dir / "skip.yml").write_text("steps: []", encoding="utf-8")
+def test_collect_common_mode_includes_common_hidden_dirs(tmp_path: Path) -> None:
+    (tmp_path / ".azure-pipelines").mkdir()
+    (tmp_path / ".azure-pipelines" / "ci.yml").write_text("steps: []", encoding="utf-8")
+    (tmp_path / ".azure").mkdir()
+    (tmp_path / ".azure" / "deploy.yaml").write_text("steps: []", encoding="utf-8")
+    (tmp_path / ".devops").mkdir()
+    (tmp_path / ".devops" / "build.yml").write_text("steps: []", encoding="utf-8")
+    (tmp_path / ".ado").mkdir()
+    (tmp_path / ".ado" / "release.yml").write_text("steps: []", encoding="utf-8")
+    (tmp_path / ".ignored").mkdir()
+    (tmp_path / ".ignored" / "skip.yml").write_text("steps: []", encoding="utf-8")
 
     scanner = FileScanner(tmp_path)
-
     collected = scanner.collect(tmp_path)
 
-    assert collected == (file_two.resolve(), file_one.resolve())
+    assert collected == (
+        (tmp_path / ".ado" / "release.yml").resolve(),
+        (tmp_path / ".azure" / "deploy.yaml").resolve(),
+        (tmp_path / ".azure-pipelines" / "ci.yml").resolve(),
+        (tmp_path / ".devops" / "build.yml").resolve(),
+    )
 
 
-def test_collect_accepts_single_file(tmp_path: Path) -> None:
-    yaml_file = tmp_path / "single.yml"
-    yaml_file.write_text("trigger: none", encoding="utf-8")
+def test_collect_common_mode_allows_explicit_hidden_target(tmp_path: Path) -> None:
+    (tmp_path / ".customhidden").mkdir()
+    yaml_file = tmp_path / ".customhidden" / "pipeline.yml"
+    yaml_file.write_text("steps: []", encoding="utf-8")
 
-    scanner = FileScanner(tmp_path)
-
-    collected = scanner.collect(yaml_file)
+    scanner = FileScanner(tmp_path, hidden_mode="common")
+    collected = scanner.collect(Path(".customhidden"))
 
     assert collected == (yaml_file.resolve(),)
+
+
+@pytest.mark.parametrize("hidden_dir_name", sorted(COMMON_HIDDEN_DIRS))
+def test_collect_common_mode_includes_every_common_hidden_dir(
+    tmp_path: Path, hidden_dir_name: str
+) -> None:
+    hidden_dir = tmp_path / hidden_dir_name
+    hidden_dir.mkdir()
+    target = hidden_dir / "ci.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, hidden_mode="common")
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (target.resolve(),)
+
+
+def test_collect_none_mode_skips_hidden_dirs(tmp_path: Path) -> None:
+    (tmp_path / ".devops").mkdir()
+    (tmp_path / ".devops" / "ci.yml").write_text("steps: []", encoding="utf-8")
+    (tmp_path / "visible").mkdir()
+    visible = tmp_path / "visible" / "pipeline.yaml"
+    visible.write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, hidden_mode="none")
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (visible.resolve(),)
+
+
+def test_collect_none_mode_returns_no_files_for_hidden_directory_target(tmp_path: Path) -> None:
+    (tmp_path / ".devops").mkdir()
+    hidden_yaml = tmp_path / ".devops" / "ci.yml"
+    hidden_yaml.write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, hidden_mode="none")
+    collected = scanner.collect(Path(".devops"))
+
+    assert collected == tuple()
+
+
+def test_collect_all_mode_includes_all_hidden_dirs_except_hard_exclusions(tmp_path: Path) -> None:
+    (tmp_path / ".customhidden").mkdir()
+    custom = tmp_path / ".customhidden" / "custom.yml"
+    custom.write_text("steps: []", encoding="utf-8")
+    (tmp_path / ".github").mkdir()
+    excluded = tmp_path / ".github" / "workflow.yml"
+    excluded.write_text("steps: []", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "ignored.yaml").write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, hidden_mode="all")
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (custom.resolve(),)
+    assert excluded.resolve() not in collected
+
+
+def test_collect_accepts_single_hidden_file_for_any_mode(tmp_path: Path) -> None:
+    (tmp_path / ".devops").mkdir()
+    hidden_file = tmp_path / ".devops" / "single.yml"
+    hidden_file.write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, hidden_mode="none")
+    collected = scanner.collect(hidden_file)
+
+    assert collected == (hidden_file.resolve(),)
 
 
 def test_collect_missing_path(tmp_path: Path) -> None:
@@ -50,21 +127,31 @@ def test_collect_resolves_relative_target_and_deduplicates(tmp_path: Path) -> No
     yaml_file.write_text("steps: []", encoding="utf-8")
 
     scanner = FileScanner(tmp_path, include_patterns=("**/*.yml", "**/*.yml"))
-
     collected = scanner.collect(Path("pipelines"))
 
     assert collected == (yaml_file.resolve(),)
 
 
-def test_candidate_excludes_non_files_and_excluded_dirs(tmp_path: Path) -> None:
-    directory = tmp_path / "folder"
-    directory.mkdir()
-    assert FileScanner._is_candidate(directory) is False
+def test_collect_preserves_glob_root_semantics_for_non_recursive_patterns(
+    tmp_path: Path,
+) -> None:
+    top_level = tmp_path / "pipeline.yml"
+    top_level.write_text("steps: []", encoding="utf-8")
+    nested_dir = tmp_path / "nested"
+    nested_dir.mkdir()
+    nested_file = nested_dir / "pipeline.yml"
+    nested_file.write_text("steps: []", encoding="utf-8")
 
-    github_file = tmp_path / ".github" / "workflow.yml"
-    github_file.parent.mkdir()
-    github_file.write_text("name: test", encoding="utf-8")
-    assert FileScanner._is_candidate(github_file) is False
+    scanner = FileScanner(tmp_path, include_patterns=("*.yml",))
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (top_level.resolve(),)
+    assert nested_file.resolve() not in collected
+
+
+def test_init_rejects_invalid_hidden_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="hidden_mode must be one of"):
+        FileScanner(tmp_path, hidden_mode="invalid")  # type: ignore[arg-type]
 
 
 def test_iter_single_file_yields_path(tmp_path: Path) -> None:

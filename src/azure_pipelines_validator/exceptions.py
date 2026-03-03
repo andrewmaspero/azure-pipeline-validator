@@ -31,5 +31,5 @@ class ValidationHalt(RuntimeError):
     """Raised when validation stops early because of fail-fast."""
 
 
-class VscodeValidationError(RuntimeError):
-    """Raised when the VS Code language-server validation stage cannot run."""
+class LspValidationError(RuntimeError):
+    """Raised when the Azure LSP language-server validation stage cannot run."""

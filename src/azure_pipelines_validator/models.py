@@ -15,7 +15,10 @@ class RepositoryReference(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    ref_name: str = Field(alias="refName")
+    ref_name: str = Field(
+        alias="refName",
+        description="Git ref used by Azure DevOps while expanding templates.",
+    )
 
 
 class RepositoryContainer(BaseModel):
@@ -23,13 +26,18 @@ class RepositoryContainer(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    self_alias: RepositoryReference = Field(alias="self")
+    self_alias: RepositoryReference = Field(
+        alias="self",
+        description="Reference metadata for the repository being validated.",
+    )
 
 
 class RepositoryResources(BaseModel):
     """Repositories section for the preview payload."""
 
-    repositories: RepositoryContainer
+    repositories: RepositoryContainer = Field(
+        description="Repository references included in the preview payload.",
+    )
 
 
 class PreviewRequest(BaseModel):
@@ -37,17 +45,34 @@ class PreviewRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    preview_run: bool = Field(default=True, alias="previewRun")
-    yaml_override: str = Field(alias="yamlOverride")
-    resources: RepositoryResources
+    preview_run: bool = Field(
+        default=True,
+        alias="previewRun",
+        description="Whether Azure DevOps should execute preview expansion logic.",
+    )
+    yaml_override: str = Field(
+        alias="yamlOverride",
+        description="Raw YAML content submitted for preview compilation.",
+    )
+    resources: RepositoryResources = Field(
+        description="Repository context used while resolving templates and resources.",
+    )
 
 
 class ValidationMessage(BaseModel):
     """Single validation issue reported by Azure DevOps."""
 
-    message: str
-    message_level: str | None = Field(default=None, alias="messageLevel")
-    issue_code: str | None = Field(default=None, alias="issueCode")
+    message: str = Field(description="Human-readable validation message from Azure DevOps.")
+    message_level: str | None = Field(
+        default=None,
+        alias="messageLevel",
+        description="Severity level reported by Azure DevOps for the validation message.",
+    )
+    issue_code: str | None = Field(
+        default=None,
+        alias="issueCode",
+        description="Stable issue identifier returned by Azure DevOps when available.",
+    )
 
 
 class PreviewResponse(BaseModel):
@@ -55,17 +80,27 @@ class PreviewResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    final_yaml: str | None = Field(default=None, alias="finalYaml")
-    validation_results: Sequence[ValidationMessage] = Field(
-        default_factory=tuple, alias="validationResults"
+    final_yaml: str | None = Field(
+        default=None,
+        alias="finalYaml",
+        description="Fully expanded Azure Pipelines YAML returned by preview.",
     )
-    continuation_token: str | None = Field(default=None, alias="continuation_token")
+    validation_results: Sequence[ValidationMessage] = Field(
+        default_factory=tuple,
+        alias="validationResults",
+        description="Validation findings produced by the Azure preview endpoint.",
+    )
+    continuation_token: str | None = Field(
+        default=None,
+        alias="continuation_token",
+        description="Pagination token included when preview results are chunked.",
+    )
 
 
 class ServiceMessage(BaseModel):
     """Minimal error payload returned by Azure DevOps."""
 
-    message: str
+    message: str = Field(description="Error message returned by the Azure DevOps service.")
 
 
 class YamlKind(StrEnum):
@@ -84,7 +119,7 @@ class StageName(StrEnum):
     YAMLLINT = "yamllint"
     SCHEMA = "schema"
     PREVIEW = "preview"
-    VSCODE = "vscode"
+    LSP = "lsp"
 
 
 class StageStatus(StrEnum):
@@ -141,8 +176,8 @@ class PreviewFinding:
 
 
 @dataclass(slots=True)
-class VscodeFinding:
-    """Finding returned by the VS Code language server."""
+class LspFinding:
+    """Finding returned by the Azure LSP language server."""
 
     path: Path
     line: int
@@ -160,12 +195,12 @@ class FileValidationResult:
     yamllint: Sequence[YamllintFinding]
     schema: Sequence[SchemaFinding]
     preview: Sequence[PreviewFinding]
-    vscode: Sequence[VscodeFinding]
+    lsp: Sequence[LspFinding]
     final_yaml: str | None
     yamllint_error: bool = False
     schema_error: bool = False
     preview_error: bool = False
-    vscode_error: bool = False
+    lsp_error: bool = False
 
     @property
     def is_successful(self) -> bool:
@@ -175,11 +210,11 @@ class FileValidationResult:
                 self.yamllint,
                 self.schema,
                 self.preview,
-                self.vscode,
+                self.lsp,
                 self.yamllint_error,
                 self.schema_error,
                 self.preview_error,
-                self.vscode_error,
+                self.lsp_error,
             )
         )
 
@@ -199,13 +234,13 @@ class FileValidationResult:
             StageName.YAMLLINT: self.yamllint,
             StageName.SCHEMA: self.schema,
             StageName.PREVIEW: self.preview,
-            StageName.VSCODE: self.vscode,
+            StageName.LSP: self.lsp,
         }[stage]
         errored = {
             StageName.YAMLLINT: self.yamllint_error,
             StageName.SCHEMA: self.schema_error,
             StageName.PREVIEW: self.preview_error,
-            StageName.VSCODE: self.vscode_error,
+            StageName.LSP: self.lsp_error,
         }[stage]
         if errored:
             return StageStatus.ERROR
@@ -222,7 +257,7 @@ class ValidationSummary:
     include_lint: bool = True
     include_schema: bool = True
     include_preview: bool = True
-    include_vscode: bool = True
+    include_lsp: bool = True
     gate_mode: GateMode = GateMode.ALL
     fail_fast: bool = False
     stopped_early: bool = False
@@ -257,7 +292,7 @@ class ValidationSummary:
     def effective_gate_mode(self) -> GateMode:
         """Return gate mode after applying fallback logic."""
         if self.gate_mode == GateMode.AUTHORITATIVE and not (
-            self.include_preview or self.include_vscode
+            self.include_preview or self.include_lsp
         ):
             return GateMode.ALL
         return self.gate_mode
@@ -267,9 +302,9 @@ class ValidationSummary:
             return not result.is_successful
 
         preview_status = result.stage_status(StageName.PREVIEW, enabled=self.include_preview)
-        vscode_status = result.stage_status(StageName.VSCODE, enabled=self.include_vscode)
+        lsp_status = result.stage_status(StageName.LSP, enabled=self.include_lsp)
         blocking_statuses = {StageStatus.FAILED, StageStatus.ERROR}
-        return (preview_status in blocking_statuses) or (vscode_status in blocking_statuses)
+        return (preview_status in blocking_statuses) or (lsp_status in blocking_statuses)
 
 
 @dataclass(slots=True)
@@ -279,6 +314,6 @@ class ValidationOptions:
     include_lint: bool = False
     include_schema: bool = False
     include_preview: bool = True
-    include_vscode: bool = True
+    include_lsp: bool = True
     gate_mode: GateMode = GateMode.AUTHORITATIVE
     fail_fast: bool = False

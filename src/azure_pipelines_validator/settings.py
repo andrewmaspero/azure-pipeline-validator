@@ -16,13 +16,30 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    organization: AnyHttpUrl
-    project: str
-    pipeline_id: int = Field(..., gt=0)
-    personal_access_token: SecretStr
-    ref_name: str = Field(default="refs/heads/main")
-    repo_root: Path
-    request_timeout_seconds: float = Field(default=30.0, gt=0)
+    organization: AnyHttpUrl = Field(
+        description="Azure DevOps organization base URL, for example https://dev.azure.com/org.",
+    )
+    project: str = Field(description="Azure DevOps project name that owns the target pipeline.")
+    pipeline_id: int = Field(
+        ...,
+        gt=0,
+        description="Numeric Azure DevOps pipeline identifier used for preview validation.",
+    )
+    personal_access_token: SecretStr = Field(
+        description="Azure DevOps personal access token used for authenticated API calls.",
+    )
+    ref_name: str = Field(
+        default="refs/heads/main",
+        description="Git ref used by Azure DevOps to resolve template includes.",
+    )
+    repo_root: Path = Field(
+        description="Repository root directory used for resolving local file paths.",
+    )
+    request_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="HTTP timeout in seconds for Azure DevOps preview requests.",
+    )
 
     @classmethod
     def from_environment(

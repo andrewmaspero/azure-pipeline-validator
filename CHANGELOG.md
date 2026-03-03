@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.1](https://github.com/andrewmaspero/azure-pipeline-validator/compare/v0.1.0...v0.1.1) (2026-03-03)
+
+
+### Bug Fixes
+
+* hidden Azure pipeline discovery and improve validator UX ([#3](https://github.com/andrewmaspero/azure-pipeline-validator/issues/3)) ([4df85de](https://github.com/andrewmaspero/azure-pipeline-validator/commit/4df85deb9314607abc3eddddcadbdd1a76fd1eac))
+* **review:** address final review findings and harden validator checks ([e7592fb](https://github.com/andrewmaspero/azure-pipeline-validator/commit/e7592fb5706052958ef0b5139f6128443859fda7))
+* **review:** apply inline workflow and runtime reliability feedback ([2c813a1](https://github.com/andrewmaspero/azure-pipeline-validator/commit/2c813a13020b7b320afb194812f60253e651506a))
+* **review:** apply README, vscode error handling, and workflow nitpicks ([d210084](https://github.com/andrewmaspero/azure-pipeline-validator/commit/d21008484f210e2e648f3d7abc2b821a1b6cf881))
+
+
+### Documentation
+
+* **readme:** normalize help examples to validate subcommand ([62c5604](https://github.com/andrewmaspero/azure-pipeline-validator/commit/62c560440cdb50dcb4fee6a95f5a5c2baccaa022))
+* **readme:** restyle root README with badge-first playbook ([dbdc7a9](https://github.com/andrewmaspero/azure-pipeline-validator/commit/dbdc7a9c4fc211320b782bd92b8ba04d1e752590))
+* **release:** update automated versioning and publishing guidance ([5ab7931](https://github.com/andrewmaspero/azure-pipeline-validator/commit/5ab793124c0227523c64a9bcf564ddb553b6f33d))
+
+
+### Chores
+
+* **ci:** add semantic PR checks and split CI workflow ([6278c07](https://github.com/andrewmaspero/azure-pipeline-validator/commit/6278c07a02d6360efb0aa6c9e73c9ce700a0735d))
+* **ci:** automate semantic release, PyPI publish, and GHCR package visibility ([f2aad85](https://github.com/andrewmaspero/azure-pipeline-validator/commit/f2aad85ad44eabe7787a489a1ba511c8ea4c806f))
+* **publish:** add release-triggered PyPI and GHCR publish workflow ([6f1cb30](https://github.com/andrewmaspero/azure-pipeline-validator/commit/6f1cb30404f9a5330dae1cbdfdc32d9c9c338937))
+* **release:** add release-please manifest, config, and workflow ([099e680](https://github.com/andrewmaspero/azure-pipeline-validator/commit/099e680731044cc837d939c3f14a34617bcf0123))
+
+## Changelog
+
 All notable changes to this project will be documented in this file.
 
 ## Unreleased

@@ -1,4 +1,8 @@
-"""JSON schema validation against Microsoft's published contract."""
+"""JSON schema validation against Microsoft's published contract.
+
+This module validates YAML documents using the Azure DevOps schema and returns
+normalized findings for schema violations and YAML parse failures.
+"""
 
 from __future__ import annotations
 
@@ -20,10 +24,31 @@ class SchemaValidator:
     """Validates YAML documents using the official Azure DevOps schema."""
 
     def __init__(self, schema_supplier: Callable[[], str]) -> None:
+        """Initializes a lazy schema validator.
+
+        Args:
+            schema_supplier: Callable that returns schema JSON text when first
+                needed.
+        """
         self._schema_supplier = schema_supplier
         self._validator: SchemaValidatorProtocol | None = None
 
     def validate(self, path: Path, content: str) -> Sequence[SchemaFinding]:
+        """Validates a YAML document and returns schema findings.
+
+        Args:
+            path: Source path attached to each emitted finding.
+            content: YAML content to parse and validate.
+
+        Returns:
+            A sequence of schema findings. If YAML parsing fails, the sequence
+            contains a single synthetic finding at ``<load>``.
+
+        Raises:
+            SchemaUnavailableError: If the schema supplier returns empty content.
+            json.JSONDecodeError: If supplied schema text is not valid JSON.
+            jsonschema.exceptions.SchemaError: If the supplied schema is invalid.
+        """
         validator = self._ensure_validator()
         try:
             parsed = yaml.safe_load(content)
@@ -57,5 +82,13 @@ class SchemaValidator:
 
 
 def _format_pointer(parts) -> str:
+    """Formats a JSON pointer from iterable path parts.
+
+    Args:
+        parts: Sequence-like path parts from a schema validation error.
+
+    Returns:
+        A JSON pointer string rooted at ``/``.
+    """
     joined = "/".join(str(part) for part in parts)
     return f"/{joined}" if joined else "/"

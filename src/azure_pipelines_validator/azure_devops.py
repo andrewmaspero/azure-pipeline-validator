@@ -1,4 +1,8 @@
-"""HTTP client for Azure DevOps preview and schema endpoints."""
+"""HTTP client for Azure DevOps preview and schema endpoints.
+
+This module provides a small authenticated client used by validation services to
+fetch preview results and schema payloads from Azure DevOps.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ from base64 import b64encode
 from contextlib import AbstractContextManager
 
 import httpx
-from pydantic import BaseModel, SecretStr
+from pydantic import SecretStr
 
 from .exceptions import AzureDevOpsError
 from .models import (
@@ -23,9 +27,19 @@ API_VERSION = "7.1"
 
 
 class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
-    """Handles authenticated calls to Azure DevOps."""
+    """Handles authenticated calls to Azure DevOps.
+
+    The client owns an underlying ``httpx.Client`` and should be closed after
+    use, either explicitly or through the context manager protocol.
+    """
 
     def __init__(self, settings: Settings) -> None:
+        """Initializes an authenticated Azure DevOps HTTP client.
+
+        Args:
+            settings: Runtime settings containing organization, project, pipeline,
+                auth, and timeout configuration.
+        """
         self._settings = settings
         self._client = httpx.Client(
             timeout=settings.request_timeout_seconds,
@@ -34,13 +48,35 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
         self._base = str(settings.organization).rstrip("/")
 
     def __exit__(self, exc_type, exc, exc_tb):
+        """Closes the HTTP client when leaving a context manager block.
+
+        Args:
+            exc_type: Exception type raised in the context block, if any.
+            exc: Exception instance raised in the context block, if any.
+            exc_tb: Traceback associated with ``exc``, if any.
+
+        Returns:
+            ``None`` so any exception is propagated by the runtime.
+        """
         self.close()
         return None
 
     def close(self) -> None:
+        """Closes the underlying HTTP client."""
         self._client.close()
 
     def preview(self, yaml_override: str) -> PreviewResponse:
+        """Requests a server-side pipeline preview for YAML content.
+
+        Args:
+            yaml_override: Pipeline YAML content to preview.
+
+        Returns:
+            Parsed preview response from Azure DevOps.
+
+        Raises:
+            AzureDevOpsError: If Azure DevOps returns a non-success status.
+        """
         request_model = PreviewRequest(
             yaml_override=yaml_override,
             resources=RepositoryResources(
@@ -62,6 +98,14 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
         raise AzureDevOpsError(response.status_code, _extract_message(response))
 
     def download_schema(self) -> str:
+        """Downloads the Azure DevOps YAML schema JSON payload.
+
+        Returns:
+            Raw schema content as text.
+
+        Raises:
+            AzureDevOpsError: If Azure DevOps returns a non-success status.
+        """
         endpoint = f"{self._base}/_apis/distributedtask/yamlschema?api-version={API_VERSION}"
         response = self._client.get(endpoint)
         if response.is_success:
@@ -70,6 +114,14 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
 
     @staticmethod
     def _default_headers(token: SecretStr) -> httpx.Headers:
+        """Builds default request headers for Azure DevOps API calls.
+
+        Args:
+            token: Personal access token used for Basic authentication.
+
+        Returns:
+            Preconfigured HTTP headers with auth and JSON content types.
+        """
         encoded = _encode_pat(token)
         return httpx.Headers(
             {
@@ -80,45 +132,30 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
         )
 
 
-def list_projects(
-    organization: str,
-    token: SecretStr,
-    *,
-    top: int | None = None,
-    timeout_seconds: float = 30.0,
-) -> list[ProjectSummary]:
-    """Return projects visible to the PAT within the specified organization."""
-
-    params = {"api-version": API_VERSION}
-    if top is not None:
-        params["$top"] = str(top)
-
-    base = str(organization).rstrip("/")
-    endpoint = f"{base}/_apis/projects"
-    headers = AzureDevOpsClient._default_headers(token)
-    with httpx.Client(timeout=timeout_seconds, headers=headers) as client:
-        response = client.get(endpoint, params=params)
-    if response.is_success:
-        payload = response.json()
-        return [ProjectSummary.model_validate(item) for item in payload.get("value", [])]
-    raise AzureDevOpsError(response.status_code, _extract_message(response))
-
-
 def _encode_pat(token: SecretStr) -> str:
+    """Encodes a personal access token for Basic authorization headers.
+
+    Args:
+        token: Personal access token to encode.
+
+    Returns:
+        Base64-encoded ``:<token>`` credential string.
+    """
     raw = f":{token.get_secret_value()}".encode("ascii")
     return b64encode(raw).decode("ascii")
 
 
 def _extract_message(response: httpx.Response) -> str:
+    """Extracts a human-readable message from an Azure DevOps response.
+
+    Args:
+        response: HTTP response from Azure DevOps.
+
+    Returns:
+        Parsed service message when available, otherwise raw response text.
+    """
     try:
         service_message = ServiceMessage.model_validate_json(response.text)
         return service_message.message
     except Exception:  # pragma: no cover - fall back to status line
         return response.text
-class ProjectSummary(BaseModel):
-    """Minimal projection of an Azure DevOps project."""
-
-    id: str
-    name: str
-    state: str
-    description: str | None = None

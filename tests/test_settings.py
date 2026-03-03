@@ -84,38 +84,31 @@ def test_invalid_pipeline_id(monkeypatch, tmp_path: Path) -> None:
         Settings.from_environment(repo_root=tmp_path)
 
 
-def test_azure_cli_token_used_when_env_missing(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("AZDO_ORG", "https://dev.azure.com/org")
-    monkeypatch.setenv("AZDO_PROJECT", "project")
-    monkeypatch.setenv("AZDO_PIPELINE_ID", "17")
-    monkeypatch.delenv("AZDO_PAT", raising=False)
-    monkeypatch.delenv("SYSTEM_ACCESSTOKEN", raising=False)
-
-    monkeypatch.setattr(
-        "azure_pipelines_validator.settings.discover_pat", lambda org: "from-az-cli"
-    )
-
-    settings = Settings.from_environment(repo_root=tmp_path)
-
-    assert settings.personal_access_token.get_secret_value() == "from-az-cli"
-
-
-def test_cli_defaults_used_for_org_and_project(monkeypatch, tmp_path: Path) -> None:
-    config_dir = tmp_path / "config-dir"
-    config_dir.mkdir()
-    config_path = config_dir / "config"
-    config_path.write_text(
-        "[defaults]\norganization=https://dev.azure.com/default\nproject=cli-project\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("AZURE_DEVOPS_EXT_CONFIG_DIR", str(config_dir))
+def test_missing_org_raises_settings_error(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("AZDO_ORG", raising=False)
-    monkeypatch.delenv("AZDO_PROJECT", raising=False)
-    monkeypatch.setenv("AZDO_PIPELINE_ID", "42")
+    monkeypatch.setenv("AZDO_PROJECT", "project")
+    monkeypatch.setenv("AZDO_PIPELINE_ID", "5")
     monkeypatch.setenv("AZDO_PAT", "token")
 
-    settings = Settings.from_environment(repo_root=tmp_path)
+    with pytest.raises(SettingsError, match="AZDO_ORG"):
+        Settings.from_environment(repo_root=tmp_path)
 
-    assert str(settings.organization) == "https://dev.azure.com/default"
-    assert settings.project == "cli-project"
+
+def test_missing_project_raises_settings_error(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AZDO_ORG", "https://dev.azure.com/org")
+    monkeypatch.delenv("AZDO_PROJECT", raising=False)
+    monkeypatch.setenv("AZDO_PIPELINE_ID", "5")
+    monkeypatch.setenv("AZDO_PAT", "token")
+
+    with pytest.raises(SettingsError, match="AZDO_PROJECT"):
+        Settings.from_environment(repo_root=tmp_path)
+
+
+def test_missing_pipeline_id_raises_settings_error(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AZDO_ORG", "https://dev.azure.com/org")
+    monkeypatch.setenv("AZDO_PROJECT", "project")
+    monkeypatch.delenv("AZDO_PIPELINE_ID", raising=False)
+    monkeypatch.setenv("AZDO_PAT", "token")
+
+    with pytest.raises(SettingsError, match="AZDO_PIPELINE_ID"):
+        Settings.from_environment(repo_root=tmp_path)

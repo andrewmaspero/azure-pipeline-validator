@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from rich.console import Console
 
 from azure_pipelines_validator.models import (
     FileValidationResult,
+    GateMode,
     PreviewFinding,
     SchemaFinding,
-    ValidationOptions,
     ValidationSummary,
     YamllintFinding,
 )
@@ -21,12 +22,13 @@ def test_reporter_renders_summary(tmp_path: Path) -> None:
     file_path.write_text("trigger: none", encoding="utf-8")
 
     summary = ValidationSummary(
-        results=(
+        (
             FileValidationResult(
                 path=file_path,
                 yamllint=tuple(),
                 schema=tuple(),
                 preview=tuple(),
+                vscode=tuple(),
                 final_yaml="trigger: none",
             ),
             FileValidationResult(
@@ -54,55 +56,116 @@ def test_reporter_renders_summary(tmp_path: Path) -> None:
                         level="error",
                     ),
                 ),
+                vscode=tuple(),
                 final_yaml=None,
             ),
-        ),
-        options=ValidationOptions(),
+        )
     )
 
     reporter = Reporter(repo_root=tmp_path, console=console)
     reporter.display(summary)
 
     output = console.export_text()
-    assert "Failures: 1" in output
+    assert "Blocking failures: 1" in output
     assert "pipeline.yml" in output
-    assert "yamllint" in output
-    assert "schema" in output
-    assert "preview" in output
-    assert "L1 C1" in output  # yamllint finding rendered in panel
-    assert "/trigger" in output  # schema finding rendered in panel
-    assert "preview error" in output
 
 
-def test_reporter_hides_skipped_checks(tmp_path: Path) -> None:
+def test_reporter_renders_skipped_stage_in_text(tmp_path: Path) -> None:
     console = Console(record=True)
     file_path = tmp_path / "pipeline.yml"
     file_path.write_text("trigger: none", encoding="utf-8")
 
     summary = ValidationSummary(
-        results=(
+        (
             FileValidationResult(
                 path=file_path,
                 yamllint=tuple(),
-                schema=(
-                    SchemaFinding(
-                        path=file_path,
-                        json_pointer="/trigger",
-                        message="invalid",
-                    ),
-                ),
+                schema=tuple(),
                 preview=tuple(),
-                final_yaml=None,
+                vscode=tuple(),
+                final_yaml="trigger: none",
             ),
         ),
-        options=ValidationOptions(include_lint=False, include_schema=True, include_preview=False),
+        include_vscode=False,
     )
 
     reporter = Reporter(repo_root=tmp_path, console=console)
     reporter.display(summary)
 
     output = console.export_text()
-    assert "schema" in output
-    assert "yamllint" not in output
-    assert "preview" not in output
-    assert "/trigger" in output  # Panel details
+    assert "skip" in output
+
+
+def test_reporter_json_output_contract(tmp_path: Path) -> None:
+    console = Console(record=True)
+    file_path = tmp_path / "pipeline.yml"
+    file_path.write_text("trigger: none", encoding="utf-8")
+
+    summary = ValidationSummary(
+        (
+            FileValidationResult(
+                path=file_path,
+                yamllint=tuple(),
+                schema=tuple(),
+                preview=(
+                    PreviewFinding(
+                        path=file_path,
+                        message="api timeout",
+                        level=None,
+                    ),
+                ),
+                vscode=tuple(),
+                final_yaml=None,
+                preview_error=True,
+            ),
+        ),
+        fail_fast=True,
+        stopped_early=True,
+        discovered_files=3,
+    )
+    reporter = Reporter(repo_root=tmp_path, console=console)
+    reporter.display(summary, output_format="json")
+
+    payload = json.loads(console.export_text())
+    assert payload["schema_version"] == 1
+    assert payload["summary"]["fail_fast"] is True
+    assert payload["summary"]["stopped_early"] is True
+    assert payload["summary"]["discovered_files"] == 3
+    assert payload["summary"]["gate_mode"] == GateMode.ALL.value
+    assert payload["summary"]["effective_gate_mode"] == GateMode.ALL.value
+    assert payload["summary"]["warnings"] == []
+    assert payload["files"][0]["path"] == "pipeline.yml"
+    assert payload["files"][0]["stages"]["preview"]["status"] == "error"
+
+
+def test_reporter_renders_warnings_in_text_and_json(tmp_path: Path) -> None:
+    console = Console(record=True)
+    file_path = tmp_path / "pipeline.yml"
+    file_path.write_text("trigger: none", encoding="utf-8")
+
+    summary = ValidationSummary(
+        (
+            FileValidationResult(
+                path=file_path,
+                yamllint=tuple(),
+                schema=tuple(),
+                preview=tuple(),
+                vscode=tuple(),
+                final_yaml="trigger: none",
+            ),
+        ),
+        warnings=("Schema stage is deprecated for Azure correctness; prefer preview+vscode.",),
+    )
+    reporter = Reporter(repo_root=tmp_path, console=console)
+    reporter.display(summary)
+
+    output = console.export_text()
+    assert "Warning: Schema stage is deprecated" in output
+
+    console = Console(record=True)
+    reporter = Reporter(repo_root=tmp_path, console=console)
+    reporter.display(summary, output_format="json")
+    payload = json.loads(console.export_text())
+    assert any(
+        "Schema stage is deprecated" in warning for warning in payload["summary"]["warnings"]
+    )

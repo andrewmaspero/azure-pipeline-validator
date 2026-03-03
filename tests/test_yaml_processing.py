@@ -85,3 +85,93 @@ def test_template_wrapper_injects_parameter_placeholders(tmp_path: Path) -> None
     assert "parameters:" in wrapped
     assert "imageName: validator-placeholder" in wrapped
     assert "enableScan: false" in wrapped
+
+
+def test_template_wrapper_uses_non_empty_array_placeholders(tmp_path: Path) -> None:
+    wrapper = TemplateWrapper(repo_root=tmp_path)
+
+    document = YamlDocument(
+        path=tmp_path / "jobs/build.yml",
+        content=("parameters:\n  - name: repositories\n    type: array\njobs: []\n"),
+        kind=YamlKind.JOBS_TEMPLATE,
+    )
+
+    wrapped = wrapper.wrap(document)
+
+    assert "repositories:" in wrapped
+    assert "- validator-placeholder" in wrapped
+
+
+def test_template_wrapper_uses_absolute_path_when_outside_repo_root(tmp_path: Path) -> None:
+    wrapper = TemplateWrapper(repo_root=tmp_path)
+    external = tmp_path.parent / "external.yml"
+    document = YamlDocument(path=external, content="steps: []", kind=YamlKind.STEPS_TEMPLATE)
+
+    wrapped = wrapper.wrap(document)
+
+    assert f"template: {external.as_posix()}" in wrapped
+
+
+def test_collect_required_parameters_handles_invalid_shapes(tmp_path: Path) -> None:
+    wrapper = TemplateWrapper(repo_root=tmp_path)
+
+    invalid_yaml = YamlDocument(
+        path=tmp_path / "invalid.yml",
+        content="[",
+        kind=YamlKind.STEPS_TEMPLATE,
+    )
+    assert wrapper._collect_required_parameters(invalid_yaml) == {}
+
+    non_mapping = YamlDocument(
+        path=tmp_path / "list.yml",
+        content="- item",
+        kind=YamlKind.STEPS_TEMPLATE,
+    )
+    assert wrapper._collect_required_parameters(non_mapping) == {}
+
+    mixed_parameters = YamlDocument(
+        path=tmp_path / "params.yml",
+        content=(
+            "parameters:\n"
+            "  - not-a-map\n"
+            "  - name: 123\n"
+            "  - name: withDefault\n"
+            "    default: value\n"
+            "  - name: requiredParam\n"
+            "    type: string\n"
+        ),
+        kind=YamlKind.STEPS_TEMPLATE,
+    )
+    assert wrapper._collect_required_parameters(mixed_parameters) == {
+        "requiredParam": "validator-placeholder"
+    }
+
+
+def test_placeholder_value_variants() -> None:
+    assert TemplateWrapper._placeholder_value("number") == 0
+    assert TemplateWrapper._placeholder_value("object") == {
+        "name": "validator-placeholder",
+        "alias": "validatorAlias",
+        "title": "validatorTitle",
+    }
+    assert TemplateWrapper._placeholder_value("steplist") == [
+        {"script": "echo validator-placeholder"}
+    ]
+    assert TemplateWrapper._placeholder_value("joblist") == [
+        {"job": "validator", "steps": [{"script": "echo validator-placeholder"}]}
+    ]
+    assert TemplateWrapper._placeholder_value("stagelist") == [
+        {
+            "stage": "Validator",
+            "jobs": [{"job": "validator", "steps": [{"script": "echo validator-placeholder"}]}],
+        }
+    ]
+
+
+def test_classify_document_covers_remaining_branches() -> None:
+    assert classify_document("[", Path("broken.yml")) == YamlKind.RAW
+    assert classify_document("jobs: []", Path("template.yml")) == YamlKind.JOBS_TEMPLATE
+    assert classify_document("steps: []", Path("template.yml")) == YamlKind.STEPS_TEMPLATE
+    assert classify_document("{}", Path("ci/jobs/template.yml")) == YamlKind.JOBS_TEMPLATE
+    assert classify_document("{}", Path("ci/steps/template.yml")) == YamlKind.STEPS_TEMPLATE
+    assert classify_document("{}", Path("ci/misc/template.yml")) == YamlKind.STEPS_TEMPLATE

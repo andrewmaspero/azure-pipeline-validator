@@ -1,24 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from azure_pipelines_validator import cli
-from azure_pipelines_validator.azure_devops import ProjectSummary
-from azure_pipelines_validator.cli import _consume_inline_env
-from azure_pipelines_validator.exceptions import AzureDevOpsError
+from azure_pipelines_validator.exceptions import (
+    AzureDevOpsError,
+    SchemaUnavailableError,
+    VscodeValidationError,
+)
 from azure_pipelines_validator.models import PreviewResponse
 
 runner = CliRunner()
-
-
-@pytest.fixture(autouse=True)
-def isolated_cli_defaults(monkeypatch, tmp_path: Path) -> None:
-    config_dir = tmp_path / "cli-config"
-    config_dir.mkdir()
-    monkeypatch.setenv("AZURE_DEVOPS_EXT_CONFIG_DIR", str(config_dir))
 
 
 def env_vars() -> dict[str, str]:
@@ -55,15 +50,7 @@ def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        [
-            "validate",
-            str(tmp_path),
-            "--repo-root",
-            str(tmp_path),
-            "--lint",
-            "--schema",
-            "--preview",
-        ],
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode"],
         env=env_vars(),
     )
 
@@ -95,7 +82,6 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
         [
-            "validate",
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
@@ -111,9 +97,7 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
             "refs/heads/dev",
             "--azdo-timeout-seconds",
             "12",
-            "--lint",
-            "--schema",
-            "--preview",
+            "--skip-vscode",
         ],
         env={},
     )
@@ -125,12 +109,12 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
 def test_cli_reports_settings_error(tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
-        ["validate", str(tmp_path), "--preview"],
+        [str(tmp_path)],
         env={},
     )
 
     assert result.exit_code == 2
-    assert "AZDO_ORG" in result.stdout
+    assert "Set AZDO_PAT" in result.stdout
 
 
 def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
@@ -150,15 +134,7 @@ def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        [
-            "validate",
-            str(tmp_path),
-            "--repo-root",
-            str(tmp_path),
-            "--lint",
-            "--schema",
-            "--preview",
-        ],
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode"],
         env=env_vars(),
         catch_exceptions=False,
     )
@@ -167,121 +143,302 @@ def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
     assert "boom" in result.stdout
 
 
-def test_cli_yamllint_only_runs_without_env(tmp_path: Path) -> None:
+def test_cli_yamllint_only_runs_without_env(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "pipeline.yml"
     target.write_text("trigger: none\n", encoding="utf-8")
-
-    result = runner.invoke(
-        cli.app,
-        ["validate", str(tmp_path), "--repo-root", str(tmp_path), "--lint"],
-        env={},
-    )
-
-    assert result.exit_code == 0
-    assert "Validated" in result.stdout
-
-
-def test_cli_passes_exclude_patterns(monkeypatch, tmp_path: Path) -> None:
-    target = tmp_path / "pipeline.yml"
-    target.write_text("trigger: none\n", encoding="utf-8")
-
-    captured: list[str] = []
-    original_collect = cli.FileScanner.collect
-
-    def spy_collect(self, path: Path) -> tuple[Path, ...]:
-        captured[:] = list(self.exclude_patterns)
-        return original_collect(self, path)
-
-    monkeypatch.setattr(cli.FileScanner, "collect", spy_collect, raising=False)
 
     result = runner.invoke(
         cli.app,
         [
-            "validate",
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
-            "--lint",
-            "--exclude",
-            "skip/me.yml",
+            "--skip-schema",
+            "--skip-preview",
+            "--skip-vscode",
         ],
         env={},
     )
 
     assert result.exit_code == 0
-    assert captured == ["skip/me.yml"]
+    assert "Validated" in result.stdout
 
 
-def test_cli_requires_toggle(tmp_path: Path) -> None:
-    result = runner.invoke(
-        cli.app,
-        ["validate", str(tmp_path)],
-        env={},
-    )
-
-    assert result.exit_code == 2
-    assert "Select at least one" in result.stdout
-
-
-def test_schema_runs_without_preview(monkeypatch, tmp_path: Path) -> None:
+def test_cli_json_output_format(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "pipeline.yml"
     target.write_text("trigger: none\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli, "download_public_schema", lambda timeout: '{"type": "object"}', raising=False
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
     )
 
     result = runner.invoke(
         cli.app,
-        ["validate", str(tmp_path), "--schema"],
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-vscode",
+            "--output-format",
+            "json",
+        ],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["success"] is True
+    assert payload["files"][0]["stages"]["vscode"]["status"] == "skipped"
+
+
+def test_cli_ndjson_output_format(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-vscode",
+            "--output-format",
+            "ndjson",
+        ],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 0
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) >= 2
+    file_record = json.loads(lines[0])
+    summary_record = json.loads(lines[-1])
+    assert file_record["type"] == "file"
+    assert summary_record["type"] == "summary"
+
+
+def test_cli_default_authoritative_gate_ignores_yamllint_only_failures(
+    monkeypatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "fail.yml"
+    target.write_text("trigger:\n\t- none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-vscode",
+            "--run-yamllint",
+        ],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 0
+    assert "authoritative" in result.stdout
+
+
+def test_cli_gate_mode_all_blocks_on_yamllint_failures(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "fail.yml"
+    target.write_text("trigger:\n\t- none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-vscode",
+            "--run-yamllint",
+            "--gate-mode",
+            "all",
+        ],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 1
+    assert "all" in result.stdout
+
+
+def test_cli_run_schema_emits_deprecation_warning(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode", "--run-schema"],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 0
+    assert "Schema stage is deprecated" in result.stdout
+
+
+def test_cli_json_summary_includes_warnings(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--skip-vscode",
+            "--run-schema",
+            "--output-format",
+            "json",
+        ],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert any(
+        "Schema stage is deprecated" in warning for warning in payload["summary"]["warnings"]
+    )
+
+
+def test_cli_reports_vscode_initialization_error(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    class RaisingVscodeValidator:
+        def __init__(self, *args, **kwargs):
+            raise VscodeValidationError("vscode unavailable")
+
+    monkeypatch.setattr(cli, "VscodeValidator", RaisingVscodeValidator)
+
+    result = runner.invoke(
+        cli.app,
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-schema", "--skip-preview"],
         env={},
     )
 
-    assert result.exit_code == 0
-    assert "Validated" in result.stdout
-
-
-def test_inline_env_assignments(tmp_path: Path) -> None:
-    env: dict[str, str] = {}
-
-    remaining = _consume_inline_env(
-        ["AZDO_PAT=123", "--flag=value", "AZDO_ORG=https://dev.azure.com/example", str(tmp_path)],
-        environ=env,
-    )
-
-    assert env["AZDO_PAT"] == "123"
-    assert env["AZDO_ORG"] == "https://dev.azure.com/example"
-    assert remaining == ["--flag=value", str(tmp_path)]
-
-
-def test_projects_command_uses_cli_defaults(monkeypatch, tmp_path: Path) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    (config_dir / "config").write_text(
-        "[defaults]\norganization=https://dev.azure.com/example\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("AZURE_DEVOPS_EXT_CONFIG_DIR", str(config_dir))
-    monkeypatch.setenv("AZDO_PAT", "token")
-    sample = [
-        ProjectSummary(id="1", name="Alpha", state="well", description=None),
-        ProjectSummary(id="2", name="Beta", state="creating", description=None),
-    ]
-    monkeypatch.setattr(cli, "_fetch_projects", lambda org, token, top: sample)
-
-    result = runner.invoke(cli.app, ["projects"], env={})
-
-    assert result.exit_code == 0
-    assert "Alpha" in result.stdout
-    assert "Beta" in result.stdout
-
-
-def test_projects_command_errors_without_org(monkeypatch) -> None:
-    monkeypatch.delenv("AZDO_ORG", raising=False)
-    monkeypatch.delenv("AZDO_PAT", raising=False)
-    monkeypatch.setattr(cli, "discover_defaults", lambda: cli.CliDefaults())
-
-    result = runner.invoke(cli.app, ["projects"], env={})
-
     assert result.exit_code == 2
-    assert "Set AZDO_ORG" in result.stdout
+    assert "vscode unavailable" in result.stdout
+
+
+def test_cli_handles_schema_unavailable_error(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.ValidationService,
+        "validate",
+        lambda self, target, options: (_ for _ in ()).throw(SchemaUnavailableError("schema boom")),
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode"],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 1
+    assert "schema boom" in result.stdout

@@ -1,4 +1,9 @@
-"""YAML IO helpers: loading, classifying, and wrapping."""
+"""YAML IO helpers for loading, classifying, and wrapping templates.
+
+The helpers in this module normalize source YAML into an internal document
+model and optionally wrap templates so they can be validated as runnable
+pipelines.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,13 @@ from .models import YamlKind
 
 @dataclass(slots=True)
 class YamlDocument:
-    """In-memory representation of a YAML file."""
+    """In-memory representation of a YAML file.
+
+    Attributes:
+        path: Filesystem path for the source document.
+        content: Raw YAML source text.
+        kind: Classified YAML kind used by downstream validators.
+    """
 
     path: Path
     content: str
@@ -25,21 +36,53 @@ class DocumentLoader:
     """Reads YAML files from disk with UTF-8 guarantees."""
 
     def __init__(self, encoding: str = "utf-8") -> None:
+        """Initializes the loader.
+
+        Args:
+            encoding: Text encoding used when reading files.
+        """
         self.encoding = encoding
 
     def load(self, path: Path) -> YamlDocument:
+        """Loads and classifies a YAML document from disk.
+
+        Args:
+            path: Path to the YAML file.
+
+        Returns:
+            Parsed document wrapper with file content and detected kind.
+        """
         text = path.read_text(encoding=self.encoding)
         kind = classify_document(text, path)
         return YamlDocument(path=path, content=text, kind=kind)
 
 
 class TemplateWrapper:
-    """Wrap templates into runnable pipelines for preview validation."""
+    """Wraps templates into runnable pipelines for preview validation.
+
+    The wrapper preserves full pipeline YAML as-is and only synthesizes minimal
+    pipeline scaffolding for template-style documents.
+    """
 
     def __init__(self, repo_root: Path | None = None) -> None:
+        """Initializes the wrapper.
+
+        Args:
+            repo_root: Optional repository root used to compute template paths
+                relative to the repo.
+        """
         self._repo_root = repo_root.resolve() if repo_root else None
 
     def wrap(self, document: YamlDocument) -> str:
+        """Wraps a YAML document according to its classified kind.
+
+        Args:
+            document: YAML document to wrap.
+
+        Returns:
+            Either the original pipeline YAML or a generated wrapper pipeline for
+            the template kind.
+        """
         match document.kind:
             case YamlKind.PIPELINE:
                 return document.content
@@ -51,6 +94,15 @@ class TemplateWrapper:
                 return self._wrap_steps(document)
 
     def _template_path(self, document: YamlDocument) -> str:
+        """Builds a template path suitable for Azure DevOps template includes.
+
+        Args:
+            document: Source document being wrapped.
+
+        Returns:
+            Repo-root-relative path prefixed with ``/`` when possible; otherwise
+            the document path as POSIX text.
+        """
         path = document.path
         if self._repo_root:
             try:
@@ -139,16 +191,43 @@ class TemplateWrapper:
             case "number" | "int" | "integer":
                 return 0
             case "object":
-                return {}
-            case "array" | "sequence" | "list":
-                return []
+                return {
+                    "name": "validator-placeholder",
+                    "alias": "validatorAlias",
+                    "title": "validatorTitle",
+                }
+            case "array" | "sequence" | "list" | "stringlist":
+                return ["validator-placeholder"]
+            case "steplist":
+                return [{"script": "echo validator-placeholder"}]
+            case "joblist":
+                return [{"job": "validator", "steps": [{"script": "echo validator-placeholder"}]}]
+            case "stagelist":
+                return [
+                    {
+                        "stage": "Validator",
+                        "jobs": [
+                            {
+                                "job": "validator",
+                                "steps": [{"script": "echo validator-placeholder"}],
+                            }
+                        ],
+                    }
+                ]
             case _:
                 return "validator-placeholder"
 
 
 def classify_document(content: str, path: Path) -> YamlKind:
-    """Best-effort detection of YAML template type."""
+    """Classifies YAML content as pipeline or template kind.
 
+    Args:
+        content: Raw YAML document content.
+        path: Source file path, used as a heuristic fallback.
+
+    Returns:
+        Detected YAML kind for validation routing.
+    """
     try:
         parsed = yaml.safe_load(content)
     except YAMLError:
@@ -176,4 +255,13 @@ def classify_document(content: str, path: Path) -> YamlKind:
 
 
 def _contains_any(source: Sequence[str], candidates: Sequence[str]) -> bool:
+    """Returns whether any candidate key exists in the source sequence.
+
+    Args:
+        source: Sequence to search within.
+        candidates: Candidate values to match against ``source``.
+
+    Returns:
+        ``True`` when at least one candidate is present; otherwise ``False``.
+    """
     return any(candidate in source for candidate in candidates)

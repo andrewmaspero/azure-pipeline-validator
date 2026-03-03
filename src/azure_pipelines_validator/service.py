@@ -69,13 +69,13 @@ class ValidationService:
             AzureDevOpsError: When preview validation fails in fail-fast mode.
         """
         files = self._scanner.collect(target)
-        documents = [self._loader.load(file_path) for file_path in files]
-        vscode_results = self._run_vscode(documents, options)
         warnings = self._build_warnings(options)
 
         results: list[FileValidationResult] = []
-        for document in documents:
+        for file_path in files:
+            document = self._loader.load(file_path)
             lint_findings = self._run_lint(document, options)
+            vscode_findings = self._run_vscode([document], options).get(document.path, tuple())
 
             wrapped_content: str | None = None
             if options.include_schema or options.include_preview:
@@ -91,7 +91,7 @@ class ValidationService:
                 yamllint=lint_findings,
                 schema=schema_findings,
                 preview=preview_findings,
-                vscode=vscode_results.get(document.path, tuple()),
+                vscode=vscode_findings,
                 final_yaml=final_yaml,
                 preview_error=preview_error,
             )
@@ -106,8 +106,8 @@ class ValidationService:
             include_vscode=options.include_vscode,
             gate_mode=options.gate_mode,
             fail_fast=options.fail_fast,
-            stopped_early=options.fail_fast and len(results) < len(documents),
-            discovered_files=len(documents),
+            stopped_early=options.fail_fast and len(results) < len(files),
+            discovered_files=len(files),
             warnings=tuple(warnings),
         )
 

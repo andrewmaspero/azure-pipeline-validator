@@ -6,6 +6,7 @@ server so diagnostics match editor behavior.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -123,14 +124,19 @@ class _LspSession:
         self._schema_uri = schema_path.resolve().as_uri()
         self._schema_text = schema_path.read_text(encoding="utf-8")
         self._timeout_seconds = timeout_seconds
-        self._process = subprocess.Popen(
-            [node_binary, str(server_path), "--stdio"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False,
-            env={**os.environ, "VSCODE_NLS_CONFIG": "{}"},
-        )
+        try:
+            self._process = subprocess.Popen(
+                [node_binary, str(server_path), "--stdio"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+                env={**os.environ, "VSCODE_NLS_CONFIG": "{}"},
+            )
+        except FileNotFoundError as error:
+            raise VscodeValidationError(
+                f"Unable to launch VS Code language server because '{node_binary}' was not found."
+            ) from error
         self._next_id = 1
         self._responses: dict[int, dict[str, Any]] = {}
         self._diagnostics_by_uri: dict[str, list[dict[str, Any]]] = {}
@@ -333,17 +339,31 @@ class _LspSession:
     def _drain_stderr(self) -> str:
         if self._process.stderr is None:
             return ""
+        fd = self._process.stderr.fileno()
+        chunks: list[bytes] = []
         try:
-            if _wait_for_fd(self._process.stderr.fileno(), 0.05):
-                return self._process.stderr.read().decode("utf-8", errors="replace").strip()
+            while _wait_for_fd(fd, 0.05):
+                try:
+                    chunk = os.read(fd, 8192)
+                except OSError as error:
+                    if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        break
+                    raise
+                if not chunk:
+                    break
+                chunks.append(chunk)
         except Exception:
             return ""
-        return ""
+        return b"".join(chunks).decode("utf-8", errors="replace").strip()
 
 
 def _wait_for_fd(fd: int, timeout_seconds: float) -> bool:
-    ready, _, _ = select.select([fd], [], [], timeout_seconds)
-    return bool(ready)
+    try:
+        ready, _, _ = select.select([fd], [], [], timeout_seconds)
+        return bool(ready)
+    except Exception:
+        # Fallback for platforms/selectors where subprocess pipes are unsupported.
+        return True
 
 
 def _try_parse_message(buffer: bytearray) -> tuple[dict[str, Any], int] | None:

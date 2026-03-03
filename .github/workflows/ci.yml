@@ -19,7 +19,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Validate PR title follows Conventional Commits
-        uses: amannn/action-semantic-pull-request@v5
+        uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -42,10 +42,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: latest
 
@@ -62,9 +62,6 @@ jobs:
 
       - name: Run Ruff Format Check
         run: uv run --python 3.13 ruff format --check
-
-      - name: Run Pytest
-        run: uv run --python 3.13 pytest -q
 
       - name: Run Pytest with Coverage Gate
         run: uv run --python 3.13 python -m pytest --cov=src/azure_pipelines_validator --cov-report=term-missing --cov-fail-under=90

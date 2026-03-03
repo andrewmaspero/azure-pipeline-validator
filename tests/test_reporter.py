@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from azure_pipelines_validator.models import (
@@ -169,3 +170,26 @@ def test_reporter_renders_warnings_in_text_and_json(tmp_path: Path) -> None:
     assert any(
         "Schema stage is deprecated" in warning for warning in payload["summary"]["warnings"]
     )
+
+
+def test_reporter_raises_on_unknown_output_format(tmp_path: Path) -> None:
+    console = Console(record=True)
+    file_path = tmp_path / "pipeline.yml"
+    file_path.write_text("trigger: none", encoding="utf-8")
+
+    summary = ValidationSummary(
+        (
+            FileValidationResult(
+                path=file_path,
+                yamllint=tuple(),
+                schema=tuple(),
+                preview=tuple(),
+                vscode=tuple(),
+                final_yaml="trigger: none",
+            ),
+        )
+    )
+
+    reporter = Reporter(repo_root=tmp_path, console=console)
+    with pytest.raises(ValueError, match="Unsupported output_format 'xml'"):
+        reporter.display(summary, output_format="xml")

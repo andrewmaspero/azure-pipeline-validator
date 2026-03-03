@@ -439,6 +439,14 @@ def test_wait_for_fd_delegates_to_select(monkeypatch: pytest.MonkeyPatch) -> Non
     assert _wait_for_fd(1, 0.1) is False
 
 
+def test_wait_for_fd_falls_back_to_true_on_select_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.select.select",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unsupported")),
+    )
+    assert _wait_for_fd(1, 0.1) is True
+
+
 def test_handle_server_request_branches(tmp_path: Path) -> None:
     session = _LspSession.__new__(_LspSession)
     session._schema_uri = "file:///schema.json"
@@ -662,6 +670,30 @@ def test_lsp_session_init_sets_state(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert session._read_buffer == bytearray()
 
 
+def test_lsp_session_init_wraps_missing_node_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schema = tmp_path / "service-schema.json"
+    schema.write_text('{"type":"object"}', encoding="utf-8")
+    server = tmp_path / "dist" / "server.js"
+    server.parent.mkdir(parents=True)
+    server.write_text("// server", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.subprocess.Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("node missing")),
+    )
+
+    with pytest.raises(VscodeValidationError, match="was not found"):
+        _LspSession(
+            repo_root=tmp_path,
+            server_path=server,
+            schema_path=schema,
+            timeout_seconds=3.0,
+            node_binary="missing-node",
+        )
+
+
 def test_lsp_session_exit_terminates_and_kills_on_timeout() -> None:
     class _Process:
         def __init__(self) -> None:
@@ -876,13 +908,23 @@ def test_drain_stderr_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     missing._process = SimpleNamespace(stderr=None)
     assert missing._drain_stderr() == ""
 
-    stderr = SimpleNamespace(
-        fileno=lambda: 1,
-        read=lambda: b"  message from stderr  ",
-    )
+    stderr = SimpleNamespace(fileno=lambda: 1)
     readable = _LspSession.__new__(_LspSession)
     readable._process = SimpleNamespace(stderr=stderr)
-    monkeypatch.setattr("azure_pipelines_validator.vscode_engine._wait_for_fd", lambda *_args: True)
+    wait_calls = {"count": 0}
+
+    def _wait_once_then_stop(*_args):
+        wait_calls["count"] += 1
+        return wait_calls["count"] == 1
+
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._wait_for_fd",
+        _wait_once_then_stop,
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.os.read",
+        lambda *_args: b"  message from stderr  ",
+    )
     assert readable._drain_stderr() == "message from stderr"
 
     broken = _LspSession.__new__(_LspSession)

@@ -17,7 +17,7 @@ jobs:
       id-token: write
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.release.tag_name }}
 
@@ -30,33 +30,33 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           skip_publish="$(python - <<'PY'
-import json
-import os
-import urllib.error
-import urllib.request
+          import json
+          import os
+          import urllib.error
+          import urllib.request
 
-package_name = os.environ["PACKAGE_NAME"]
-version = os.environ["RELEASE_TAG"].lstrip("v")
-url = f"https://pypi.org/pypi/{package_name}/json"
+          package_name = os.environ["PACKAGE_NAME"]
+          version = os.environ["RELEASE_TAG"].lstrip("v")
+          url = f"https://pypi.org/pypi/{package_name}/json"
 
-try:
-    with urllib.request.urlopen(url, timeout=15) as response:
-        payload = json.load(response)
-except urllib.error.HTTPError as error:
-    if error.code == 404:
-        print("false")
-    else:
-        raise
-else:
-    releases = payload.get("releases", {})
-    print("true" if releases.get(version) else "false")
-PY
+          try:
+              with urllib.request.urlopen(url, timeout=15) as response:
+                  payload = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code == 404:
+                  print("false")
+              else:
+                  raise
+          else:
+              releases = payload.get("releases", {})
+              print("true" if releases.get(version) else "false")
+          PY
           )"
           echo "skip_publish=${skip_publish}" >> "${GITHUB_OUTPUT}"
 
       - name: Install uv
         if: steps.pypi_check.outputs.skip_publish != 'true'
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: latest
 
@@ -87,12 +87,12 @@ PY
       packages: write
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.release.tag_name }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
         with:
           version: latest
 
@@ -115,14 +115,14 @@ PY
           echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install ORAS
-        uses: oras-project/setup-oras@v1
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
 
       - name: Check if OCI artifact already exists
         id: ghcr_check

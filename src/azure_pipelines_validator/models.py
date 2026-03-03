@@ -170,7 +170,18 @@ class FileValidationResult:
     @property
     def is_successful(self) -> bool:
         """Return whether all enabled stages passed without findings."""
-        return not any((self.yamllint, self.schema, self.preview, self.vscode))
+        return not any(
+            (
+                self.yamllint,
+                self.schema,
+                self.preview,
+                self.vscode,
+                self.yamllint_error,
+                self.schema_error,
+                self.preview_error,
+                self.vscode_error,
+            )
+        )
 
     def stage_status(self, stage: StageName, *, enabled: bool) -> StageStatus:
         """Compute the status for a stage.

@@ -166,7 +166,7 @@ Options:
 
 `--output-format text` (default): every file gets one row with four columns (yamllint / schema / preview / vscode). A passing stage prints `pass`; skipped stages print `skip`; failing/error stages show the first message (plus a “(+N more)” suffix when applicable). Example:
 
-```
+```text
 ╭──────────────────────┬──────────┬────────┬──────────────────────┬──────────────────────╮
 │ File                 │ yamllint │ schema │ preview              │ vscode               │
 ├──────────────────────┼──────────┼────────┼──────────────────────┼──────────────────────┤

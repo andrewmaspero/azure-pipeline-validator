@@ -6,6 +6,7 @@ import pytest
 
 from azure_pipelines_validator.exceptions import AzureDevOpsError
 from azure_pipelines_validator.models import (
+    FileValidationResult,
     GateMode,
     ValidationMessage,
     ValidationOptions,
@@ -238,3 +239,50 @@ def test_validation_service_warns_when_authoritative_gate_falls_back_to_all(
     assert summary.effective_gate_mode == GateMode.ALL
     assert any("falling back to 'all'" in warning for warning in summary.warnings)
     assert summary.failing_files == 1
+
+
+def test_file_validation_result_not_successful_when_stage_error_flag_set(tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    result = FileValidationResult(
+        path=target,
+        yamllint=tuple(),
+        schema=tuple(),
+        preview=tuple(),
+        vscode=tuple(),
+        final_yaml=None,
+        preview_error=True,
+    )
+
+    assert result.is_successful is False
+
+
+def test_validation_service_fail_fast_stops_before_extra_vscode_runs(tmp_path: Path) -> None:
+    file_one = tmp_path / "fail.yml"
+    file_two = tmp_path / "later.yml"
+    for path in (file_one, file_two):
+        path.write_text("steps: []", encoding="utf-8")
+
+    class CountingVscodeValidator:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.document_names: list[str] = []
+
+        def run(self, documents):
+            self.calls += 1
+            self.document_names.extend(document.path.name for document in documents)
+            return {document.path: tuple() for document in documents}
+
+    vscode_validator = CountingVscodeValidator()
+    service, _ = build_service((file_one, file_two))
+    service._vscode_validator = vscode_validator
+
+    summary = service.validate(
+        tmp_path,
+        ValidationOptions(include_lint=True, include_vscode=True, fail_fast=True),
+    )
+
+    assert summary.total_files == 1
+    assert vscode_validator.calls == 1
+    assert vscode_validator.document_names == ["fail.yml"]

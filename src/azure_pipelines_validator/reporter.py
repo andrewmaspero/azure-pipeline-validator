@@ -44,7 +44,10 @@ class Reporter:
             for record in self.as_ndjson(summary):
                 self._emit_json_line(json.dumps(record, separators=(",", ":")))
             return
-        self._display_text(summary)
+        if output_format == "text":
+            self._display_text(summary)
+            return
+        raise ValueError(f"Unsupported output_format '{output_format}'.")
 
     def _emit_json_line(self, line: str) -> None:
         """Prints one JSON line without Rich soft wrapping."""

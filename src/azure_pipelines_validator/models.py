@@ -15,7 +15,10 @@ class RepositoryReference(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    ref_name: str = Field(alias="refName")
+    ref_name: str = Field(
+        alias="refName",
+        description="Git ref used by Azure DevOps while expanding templates.",
+    )
 
 
 class RepositoryContainer(BaseModel):
@@ -23,13 +26,18 @@ class RepositoryContainer(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    self_alias: RepositoryReference = Field(alias="self")
+    self_alias: RepositoryReference = Field(
+        alias="self",
+        description="Reference metadata for the repository being validated.",
+    )
 
 
 class RepositoryResources(BaseModel):
     """Repositories section for the preview payload."""
 
-    repositories: RepositoryContainer
+    repositories: RepositoryContainer = Field(
+        description="Repository references included in the preview payload.",
+    )
 
 
 class PreviewRequest(BaseModel):
@@ -37,17 +45,34 @@ class PreviewRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    preview_run: bool = Field(default=True, alias="previewRun")
-    yaml_override: str = Field(alias="yamlOverride")
-    resources: RepositoryResources
+    preview_run: bool = Field(
+        default=True,
+        alias="previewRun",
+        description="Whether Azure DevOps should execute preview expansion logic.",
+    )
+    yaml_override: str = Field(
+        alias="yamlOverride",
+        description="Raw YAML content submitted for preview compilation.",
+    )
+    resources: RepositoryResources = Field(
+        description="Repository context used while resolving templates and resources.",
+    )
 
 
 class ValidationMessage(BaseModel):
     """Single validation issue reported by Azure DevOps."""
 
-    message: str
-    message_level: str | None = Field(default=None, alias="messageLevel")
-    issue_code: str | None = Field(default=None, alias="issueCode")
+    message: str = Field(description="Human-readable validation message from Azure DevOps.")
+    message_level: str | None = Field(
+        default=None,
+        alias="messageLevel",
+        description="Severity level reported by Azure DevOps for the validation message.",
+    )
+    issue_code: str | None = Field(
+        default=None,
+        alias="issueCode",
+        description="Stable issue identifier returned by Azure DevOps when available.",
+    )
 
 
 class PreviewResponse(BaseModel):
@@ -55,17 +80,27 @@ class PreviewResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    final_yaml: str | None = Field(default=None, alias="finalYaml")
-    validation_results: Sequence[ValidationMessage] = Field(
-        default_factory=tuple, alias="validationResults"
+    final_yaml: str | None = Field(
+        default=None,
+        alias="finalYaml",
+        description="Fully expanded Azure Pipelines YAML returned by preview.",
     )
-    continuation_token: str | None = Field(default=None, alias="continuation_token")
+    validation_results: Sequence[ValidationMessage] = Field(
+        default_factory=tuple,
+        alias="validationResults",
+        description="Validation findings produced by the Azure preview endpoint.",
+    )
+    continuation_token: str | None = Field(
+        default=None,
+        alias="continuation_token",
+        description="Pagination token included when preview results are chunked.",
+    )
 
 
 class ServiceMessage(BaseModel):
     """Minimal error payload returned by Azure DevOps."""
 
-    message: str
+    message: str = Field(description="Error message returned by the Azure DevOps service.")
 
 
 class YamlKind(StrEnum):

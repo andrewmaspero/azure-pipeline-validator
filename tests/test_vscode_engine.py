@@ -15,12 +15,16 @@ from azure_pipelines_validator.models import VscodeFinding, YamlKind
 from azure_pipelines_validator.vscode_engine import (
     VscodeValidator,
     _bootstrap_extension_assets,
+    _detect_node_platform_key,
     _discover_installed_extension,
     _env_flag,
     _env_float,
     _extract_version_key,
+    _install_node_runtime,
     _LspSession,
     _resolve_bootstrapped_extension,
+    _resolve_node_binary,
+    _resolve_node_version,
     _resolve_server_and_schema,
     _severity_label,
     _try_parse_message,
@@ -447,6 +451,108 @@ def test_wait_for_fd_falls_back_to_true_on_select_error(monkeypatch: pytest.Monk
     assert _wait_for_fd(1, 0.1) is True
 
 
+def test_resolve_node_binary_uses_path_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.shutil.which", lambda _: "/usr/bin/node"
+    )
+    assert _resolve_node_binary("node") == "/usr/bin/node"
+
+
+def test_resolve_node_binary_rejects_missing_explicit_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.shutil.which", lambda _: None)
+    with pytest.raises(VscodeValidationError, match="was not found"):
+        _resolve_node_binary("custom-node")
+
+
+def test_resolve_node_binary_installs_default_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.shutil.which", lambda _: None)
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._install_node_runtime",
+        lambda **_kwargs: Path("/tmp/node-runtime/bin/node"),
+    )
+    assert _resolve_node_binary("node") == "/tmp/node-runtime/bin/node"
+
+
+def test_detect_node_platform_key_supports_common_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.platform.machine",
+        lambda: "arm64",
+    )
+    assert _detect_node_platform_key() == "darwin-arm64"
+
+    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.platform.machine",
+        lambda: "x86_64",
+    )
+    assert _detect_node_platform_key() == "linux-x64"
+
+
+def test_detect_node_platform_key_rejects_unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("azure_pipelines_validator.vscode_engine.platform.system", lambda: "Plan9")
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.platform.machine",
+        lambda: "mips",
+    )
+    with pytest.raises(VscodeValidationError, match="not supported"):
+        _detect_node_platform_key()
+
+
+def test_resolve_node_version_variants(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _resolve_node_version("22.13.1", timeout_seconds=1.0) == "22.13.1"
+    assert _resolve_node_version("v22.13.1", timeout_seconds=1.0) == "22.13.1"
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type, exc, exc_tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                [
+                    {"version": "v23.1.0", "lts": False},
+                    {"version": "v22.14.0", "lts": "Jod"},
+                ]
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine.urlopen",
+        lambda *_args, **_kwargs: _Response(),
+    )
+    assert _resolve_node_version("latest", timeout_seconds=1.0) == "23.1.0"
+    assert _resolve_node_version("lts", timeout_seconds=1.0) == "22.14.0"
+
+
+def test_install_node_runtime_uses_cached_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._resolve_node_version",
+        lambda *_args, **_kwargs: "22.14.0",
+    )
+    cached = tmp_path / "node-v22.14.0" / "linux-x64" / "bin" / "node"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    assert (
+        _install_node_runtime(
+            version_spec="lts",
+            cache_root=tmp_path,
+            timeout_seconds=1.0,
+        )
+        == cached.resolve()
+    )
+
+
 def test_handle_server_request_branches(tmp_path: Path) -> None:
     session = _LspSession.__new__(_LspSession)
     session._schema_uri = "file:///schema.json"
@@ -545,6 +651,10 @@ def test_vscode_validator_init_and_properties(
         "azure_pipelines_validator.vscode_engine._resolve_server_and_schema",
         lambda **_kwargs: (server, schema),
     )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._resolve_node_binary",
+        lambda _node_binary: "node",
+    )
 
     validator = VscodeValidator(repo_root=tmp_path)
 
@@ -558,6 +668,10 @@ def test_vscode_validator_run_empty_short_circuits(
     monkeypatch.setattr(
         "azure_pipelines_validator.vscode_engine._resolve_server_and_schema",
         lambda **_kwargs: (tmp_path / "dist" / "server.js", tmp_path / "service-schema.json"),
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._resolve_node_binary",
+        lambda _node_binary: "node",
     )
 
     called = {"entered": False}
@@ -589,6 +703,10 @@ def test_vscode_validator_run_with_mocked_session(
     monkeypatch.setattr(
         "azure_pipelines_validator.vscode_engine._resolve_server_and_schema",
         lambda **_kwargs: (server, schema),
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.vscode_engine._resolve_node_binary",
+        lambda _node_binary: "node-resolved",
     )
 
     doc_a = YamlDocument(path=tmp_path / "a.yml", content="trigger: none", kind=YamlKind.PIPELINE)
@@ -632,7 +750,7 @@ def test_vscode_validator_run_with_mocked_session(
     assert captured["server_path"] == server
     assert captured["schema_path"] == schema
     assert captured["timeout_seconds"] == 12.0
-    assert captured["node_binary"] == "node-test"
+    assert captured["node_binary"] == "node-resolved"
     assert result == findings
 
 

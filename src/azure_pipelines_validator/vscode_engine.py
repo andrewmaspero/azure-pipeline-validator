@@ -10,10 +10,12 @@ import errno
 import hashlib
 import json
 import os
+import platform
 import re
 import select
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -34,6 +36,9 @@ _DEFAULT_EXTENSION_VERSION = "latest"
 _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30.0
 _DEFAULT_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "vscode-assets"
 _VSIX_ASSET_NAME = "Microsoft.VisualStudio.Services.VSIXPackage"
+_DEFAULT_NODE_VERSION = "lts"
+_DEFAULT_NODE_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "node-runtime"
+_NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
 
 
 class VscodeValidator:
@@ -63,7 +68,7 @@ class VscodeValidator:
         """
         self._repo_root = repo_root.resolve()
         self._timeout_seconds = timeout_seconds
-        self._node_binary = node_binary
+        self._node_binary = _resolve_node_binary(node_binary)
         resolved_server, resolved_schema = _resolve_server_and_schema(
             server_path=server_path,
             schema_path=schema_path,
@@ -565,6 +570,152 @@ def _extract_vsix_member(archive: ZipFile, member_name: str, target_path: Path) 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     with archive.open(member_name) as source, target_path.open("wb") as destination:
         shutil.copyfileobj(source, destination)
+
+
+def _resolve_node_binary(node_binary: str) -> str:
+    resolved = shutil.which(node_binary)
+    if resolved:
+        return resolved
+
+    if node_binary != "node":
+        raise VscodeValidationError(
+            f"Unable to launch VS Code language server because '{node_binary}' was not found."
+        )
+
+    timeout_seconds = _env_float(
+        "AZP_VALIDATOR_NODE_DOWNLOAD_TIMEOUT_SECONDS",
+        _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
+    )
+    version_spec = os.getenv("AZP_VALIDATOR_NODE_VERSION", _DEFAULT_NODE_VERSION)
+    cache_root = Path(
+        os.getenv("AZP_VALIDATOR_NODE_CACHE_DIR", str(_DEFAULT_NODE_CACHE_DIR))
+    ).expanduser()
+    try:
+        return str(
+            _install_node_runtime(
+                version_spec=version_spec,
+                cache_root=cache_root,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    except VscodeValidationError:
+        raise
+    except Exception as exc:
+        raise VscodeValidationError(
+            "Node.js runtime auto-install failed. Install Node.js manually or set "
+            "AZP_VALIDATOR_NODE_VERSION/AZP_VALIDATOR_NODE_CACHE_DIR."
+        ) from exc
+
+
+def _install_node_runtime(*, version_spec: str, cache_root: Path, timeout_seconds: float) -> Path:
+    platform_key = _detect_node_platform_key()
+    version = _resolve_node_version(version_spec, timeout_seconds=timeout_seconds)
+    install_dir = cache_root / f"node-v{version}" / platform_key
+    node_path = install_dir / ("node.exe" if platform_key.startswith("win-") else "bin/node")
+    if node_path.exists():
+        return node_path.resolve()
+
+    base_name = f"node-v{version}-{platform_key}"
+    extension = "zip" if platform_key.startswith("win-") else "tar.xz"
+    download_url = f"https://nodejs.org/dist/v{version}/{base_name}.{extension}"
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="node-runtime-") as temp_dir:
+        temp_path = Path(temp_dir)
+        archive_path = temp_path / f"{base_name}.{extension}"
+        extract_path = temp_path / "extract"
+        try:
+            with urlopen(download_url, timeout=timeout_seconds) as response:
+                archive_path.write_bytes(response.read())
+        except URLError as exc:
+            raise VscodeValidationError(
+                f"Unable to download Node.js runtime archive from {download_url}: {exc}"
+            ) from exc
+
+        try:
+            if extension == "zip":
+                with ZipFile(archive_path) as archive:
+                    archive.extractall(extract_path)
+            else:
+                with tarfile.open(archive_path, mode="r:*") as archive:
+                    archive.extractall(extract_path)
+        except (BadZipFile, tarfile.TarError) as exc:
+            raise VscodeValidationError("Downloaded Node.js archive is invalid.") from exc
+
+        extracted_root = extract_path / base_name
+        if not extracted_root.exists():
+            raise VscodeValidationError(
+                "Downloaded Node.js archive did not contain expected runtime layout."
+            )
+
+        target_parent = install_dir.parent
+        target_name = install_dir.name
+        temp_target = target_parent / f".{target_name}.tmp"
+        if temp_target.exists():
+            shutil.rmtree(temp_target)
+        shutil.move(str(extracted_root), str(temp_target))
+        shutil.rmtree(install_dir, ignore_errors=True)
+        temp_target.replace(install_dir)
+
+    if not node_path.exists():
+        raise VscodeValidationError(
+            "Node.js runtime install completed but the node executable was not found."
+        )
+    if not platform_key.startswith("win-"):
+        node_path.chmod(node_path.stat().st_mode | 0o111)
+    return node_path.resolve()
+
+
+def _resolve_node_version(version_spec: str, *, timeout_seconds: float) -> str:
+    value = version_spec.strip().lower()
+    if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
+        return value.lstrip("v")
+    if value not in {"lts", "latest"}:
+        raise VscodeValidationError(
+            "Environment variable AZP_VALIDATOR_NODE_VERSION must be 'lts', 'latest', "
+            "or a full semantic version like '22.13.1'."
+        )
+
+    try:
+        with urlopen(_NODE_INDEX_URL, timeout=timeout_seconds) as response:
+            releases = json.loads(response.read().decode("utf-8"))
+    except (URLError, json.JSONDecodeError) as exc:
+        raise VscodeValidationError(f"Unable to resolve Node.js {value} version: {exc}") from exc
+
+    if not isinstance(releases, list):
+        raise VscodeValidationError("Node.js release index response was not a list.")
+
+    for release in releases:
+        if not isinstance(release, dict):
+            continue
+        if value == "lts" and not release.get("lts"):
+            continue
+        raw_version = str(release.get("version", ""))
+        if re.fullmatch(r"v\d+\.\d+\.\d+", raw_version):
+            return raw_version.lstrip("v")
+    raise VscodeValidationError(f"Could not find a Node.js {value} release in the upstream index.")
+
+
+def _detect_node_platform_key() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    aliases = {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }
+    normalized_machine = aliases.get(machine, machine)
+
+    if system == "darwin" and normalized_machine in {"x64", "arm64"}:
+        return f"darwin-{normalized_machine}"
+    if system == "linux" and normalized_machine in {"x64", "arm64"}:
+        return f"linux-{normalized_machine}"
+    if system == "windows" and normalized_machine in {"x64", "arm64"}:
+        return f"win-{normalized_machine}"
+    raise VscodeValidationError(
+        f"Automatic Node.js installation is not supported on this platform: {system}/{machine}"
+    )
 
 
 def _env_flag(name: str) -> bool:

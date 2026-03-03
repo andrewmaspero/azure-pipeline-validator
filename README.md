@@ -1,6 +1,6 @@
 # ![Azure Pipeline Validator](https://img.shields.io/static/v1?label=&message=Azure%20Pipeline%20Validator&color=1D4ED8&style=for-the-badge&logo=azuredevops&logoColor=white)
 
-Local-first Azure DevOps YAML validation with Azure-authoritative checks by default.
+Local-first Azure DevOps YAML validation with Azure-authoritative checks and VS Code extension parity by default.
 
 <div align="left">
   <table>
@@ -90,9 +90,13 @@ uvx azure-pipeline-validator validate --help
 | `AZP_VALIDATOR_VSCODE_VERSION` | no | `latest` | string | Pins downloaded Azure Pipelines extension version. |
 | `AZP_VALIDATOR_VSCODE_SHA256` | no | - | hex | Optional checksum verification for extension download. |
 | `AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for extension download operations. |
+| `AZP_VALIDATOR_NODE_VERSION` | no | `lts` | string | Node.js version for auto-install (`lts`, `latest`, or exact semver). |
+| `AZP_VALIDATOR_NODE_CACHE_DIR` | no | `~/.azure-pipeline-validator/node-runtime` | path | Cache directory for downloaded Node.js runtimes. |
+| `AZP_VALIDATOR_NODE_DOWNLOAD_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for Node.js download operations. |
 
 Notes:
-- Default behavior runs `preview` and `vscode`; these require Azure credentials and Node runtime availability.
+- Default behavior runs `preview` and `vscode`; these require Azure credentials and a Node runtime.
+- If `node` is not present on `PATH`, the CLI auto-downloads a compatible Node runtime into the user cache.
 - `yamllint` and `schema` are advisory by default and disabled until explicitly enabled.
 - If both authoritative stages are disabled while `--gate-mode authoritative` is requested, gating falls back to `all` with a warning.
 
@@ -240,8 +244,8 @@ uvx --from pydocstyle pydocstyle --convention=google src
   - Cause: generic YAML schema validation and Azure template semantics diverge.
   - Action: rely on `preview` and `vscode` as source of truth for Azure correctness.
 - Symptom: VS Code validator cannot start.
-  - Cause: missing Node binary or unavailable extension assets.
-  - Action: ensure Node is installed and pass `--vscode-server-path` and `--vscode-schema-path` if needed.
+  - Cause: unavailable Node runtime or extension assets.
+  - Action: rerun with network access so runtime/assets can auto-bootstrap, or provide `--vscode-server-path` and `--vscode-schema-path` plus a valid Node binary.
 - Symptom: preview failures in CI.
   - Cause: missing Azure credentials or insufficient PAT scope.
   - Action: ensure `AZDO_*` values are present and token has Build Read and Execute permissions.

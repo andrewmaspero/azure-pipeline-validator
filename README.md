@@ -130,7 +130,7 @@ Options:
 ### Hidden directories
 
 Default hidden discovery mode is `common`, which auto-discovers Azure DevOps-oriented hidden directories such as:
-`.azure-pipelines`, `.azure`, `.devops`, `.ado`, `.azdo`, `.azuredevops`, `.azure-devops`, `.azpipelines`, `.azp`, `.pipelines`, `.pipeline`, `.ci`, `.cicd`.
+`.azure-pipelines`, `.azure-pipeline`, `.azure-pipelines-templates`, `.azure-pipeline-templates`, `.azure_pipelines`, `.azure_pipeline`, `.azure_pipeline_templates`, `.azure`, `.azure-devops-pipelines`, `.azuredevops-pipelines`, `.azure_devops`, `.azure_devops_pipelines`, `.devops`, `.devops-pipelines`, `.devops-pipeline`, `.devops-templates`, `.devops-ci`, `.devops-cicd`, `.ado`, `.ado-pipelines`, `.ado-pipeline`, `.ado-templates`, `.azdo`, `.azdo-pipelines`, `.azdo-pipeline`, `.azdo-templates`, `.azuredevops`, `.azure-devops`, `.azpipelines`, `.azp`, `.azp-pipelines`, `.azp-templates`, `.pipelines`, `.pipeline`, `.pipelines-templates`, `.pipeline-templates`, `.release-pipelines`, `.build-pipelines`, `.ci`, `.cicd`, `.ci-cd`.
 
 Examples:
 

@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from azure_pipelines_validator.file_scanner import FileScanner, iter_single_file
+from azure_pipelines_validator.file_scanner import (
+    COMMON_HIDDEN_DIRS,
+    FileScanner,
+    iter_single_file,
+)
 
 
 def test_collect_common_mode_includes_common_hidden_dirs(tmp_path: Path) -> None:
@@ -39,6 +43,21 @@ def test_collect_common_mode_allows_explicit_hidden_target(tmp_path: Path) -> No
     collected = scanner.collect(Path(".customhidden"))
 
     assert collected == (yaml_file.resolve(),)
+
+
+@pytest.mark.parametrize("hidden_dir_name", sorted(COMMON_HIDDEN_DIRS))
+def test_collect_common_mode_includes_every_common_hidden_dir(
+    tmp_path: Path, hidden_dir_name: str
+) -> None:
+    hidden_dir = tmp_path / hidden_dir_name
+    hidden_dir.mkdir()
+    target = hidden_dir / "ci.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, hidden_mode="common")
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (target.resolve(),)
 
 
 def test_collect_none_mode_skips_hidden_dirs(tmp_path: Path) -> None:

@@ -37,8 +37,14 @@ jobs:
       - name: Run Ruff
         run: uv run --python 3.13 ruff check
 
+      - name: Run Ruff Format Check
+        run: uv run --python 3.13 ruff format --check
+
       - name: Run Pytest
         run: uv run --python 3.13 pytest -q
+
+      - name: Run Pytest with Coverage Gate
+        run: uv run --python 3.13 python -m pytest --cov=src/azure_pipelines_validator --cov-report=term-missing --cov-fail-under=90
 
   publish:
     needs: test

@@ -1,6 +1,6 @@
 [project]
 name = "azure-pipeline-validator"
-version = "0.1.2"
+version = "0.1.3"
 description = "Validation-first Azure DevOps YAML validator with Azure preview and Azure LSP checks"
 readme = "README.md"
 requires-python = ">=3.13"

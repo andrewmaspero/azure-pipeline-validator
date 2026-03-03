@@ -455,74 +455,57 @@ def test_cli_handles_schema_unavailable_error(monkeypatch, tmp_path: Path) -> No
     assert "schema boom" in result.stdout
 
 
-def test_cli_default_common_mode_discovers_devops_hidden_directory(tmp_path: Path) -> None:
-    hidden_dir = tmp_path / ".devops"
+def run_hidden_mode_test(
+    *,
+    tmp_path: Path,
+    hidden_name: str,
+    hidden_mode: str | None,
+    expected_substring: str,
+) -> None:
+    hidden_dir = tmp_path / hidden_name
     hidden_dir.mkdir()
     (hidden_dir / "ci.yml").write_text("steps: []\n", encoding="utf-8")
 
-    result = runner.invoke(
-        cli.app,
-        [
-            str(tmp_path),
-            "--repo-root",
-            str(tmp_path),
-            "--skip-preview",
-            "--skip-schema",
-            "--skip-lsp",
-            "--run-yamllint",
-        ],
-        env={},
-    )
+    args = [
+        str(tmp_path),
+        "--repo-root",
+        str(tmp_path),
+        "--skip-preview",
+        "--skip-schema",
+        "--skip-lsp",
+        "--run-yamllint",
+    ]
+    if hidden_mode is not None:
+        args.extend(["--hidden-mode", hidden_mode])
+
+    result = runner.invoke(cli.app, args, env={})
 
     assert result.exit_code == 0
-    assert ".devops/ci.yml" in result.stdout
+    assert expected_substring in result.stdout
+
+
+def test_cli_default_common_mode_discovers_devops_hidden_directory(tmp_path: Path) -> None:
+    run_hidden_mode_test(
+        tmp_path=tmp_path,
+        hidden_name=".devops",
+        hidden_mode=None,
+        expected_substring=".devops/ci.yml",
+    )
 
 
 def test_cli_hidden_mode_none_excludes_devops_hidden_directory(tmp_path: Path) -> None:
-    hidden_dir = tmp_path / ".devops"
-    hidden_dir.mkdir()
-    (hidden_dir / "ci.yml").write_text("steps: []\n", encoding="utf-8")
-
-    result = runner.invoke(
-        cli.app,
-        [
-            str(tmp_path),
-            "--repo-root",
-            str(tmp_path),
-            "--hidden-mode",
-            "none",
-            "--skip-preview",
-            "--skip-schema",
-            "--skip-lsp",
-            "--run-yamllint",
-        ],
-        env={},
+    run_hidden_mode_test(
+        tmp_path=tmp_path,
+        hidden_name=".devops",
+        hidden_mode="none",
+        expected_substring="Validated 0 file(s).",
     )
-
-    assert result.exit_code == 0
-    assert "Validated 0 file(s)." in result.stdout
 
 
 def test_cli_hidden_mode_all_includes_non_common_hidden_directory(tmp_path: Path) -> None:
-    hidden_dir = tmp_path / ".customhidden"
-    hidden_dir.mkdir()
-    (hidden_dir / "ci.yml").write_text("steps: []\n", encoding="utf-8")
-
-    result = runner.invoke(
-        cli.app,
-        [
-            str(tmp_path),
-            "--repo-root",
-            str(tmp_path),
-            "--hidden-mode",
-            "all",
-            "--skip-preview",
-            "--skip-schema",
-            "--skip-lsp",
-            "--run-yamllint",
-        ],
-        env={},
+    run_hidden_mode_test(
+        tmp_path=tmp_path,
+        hidden_name=".customhidden",
+        hidden_mode="all",
+        expected_substring=".customhidden/ci.yml",
     )
-
-    assert result.exit_code == 0
-    assert ".customhidden/ci.yml" in result.stdout

@@ -2,8 +2,30 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Literal, Sequence
+
+HiddenMode = Literal["common", "all", "none"]
+
+ALWAYS_EXCLUDED_DIRS = frozenset({".git", ".github"})
+COMMON_HIDDEN_DIRS = frozenset(
+    {
+        ".azure-pipelines",
+        ".azure",
+        ".devops",
+        ".ado",
+        ".azdo",
+        ".azuredevops",
+        ".azure-devops",
+        ".azpipelines",
+        ".azp",
+        ".pipelines",
+        ".pipeline",
+        ".ci",
+        ".cicd",
+    }
+)
 
 
 class FileScanner:
@@ -13,15 +35,18 @@ class FileScanner:
         self,
         repo_root: Path,
         include_patterns: Sequence[str] | None = None,
+        hidden_mode: HiddenMode = "common",
     ) -> None:
         """Initialize the file scanner.
 
         Args:
             repo_root: Repository root used to resolve relative targets.
             include_patterns: Optional glob patterns used for YAML discovery.
+            hidden_mode: Hidden directory behavior (common, all, none).
         """
         self.repo_root = repo_root
         self.include_patterns = include_patterns or ("**/*.yml", "**/*.yaml")
+        self.hidden_mode = hidden_mode
 
     def collect(self, target: Path) -> tuple[Path, ...]:
         """Return every YAML file beneath *target* (or the file itself)."""
@@ -30,12 +55,10 @@ class FileScanner:
             return (resolved_target,)
         if not resolved_target.exists():
             raise FileNotFoundError(resolved_target)
+        if self.hidden_mode == "none" and self._is_explicit_hidden_target(resolved_target):
+            return tuple()
 
-        collected: list[Path] = []
-        for pattern in self.include_patterns:
-            collected.extend(
-                path for path in resolved_target.glob(pattern) if self._is_candidate(path)
-            )
+        collected = self._collect_yaml_files(resolved_target)
 
         seen: set[Path] = set()
         ordered: list[Path] = []
@@ -53,18 +76,58 @@ class FileScanner:
             return candidate
         return (self.repo_root / candidate).resolve()
 
-    @staticmethod
-    def _is_candidate(path: Path) -> bool:
-        if not path.is_file():
+    def _collect_yaml_files(self, root: Path) -> list[Path]:
+        explicit_hidden_target = self._is_explicit_hidden_target(root)
+        discovered: list[Path] = []
+
+        for current_root, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current_root)
+            dirnames[:] = sorted(
+                name
+                for name in dirnames
+                if self._should_descend_directory(
+                    name, explicit_hidden_target=explicit_hidden_target
+                )
+            )
+
+            for filename in sorted(filenames):
+                file_path = current_path / filename
+                if self._matches_include_patterns(file_path.relative_to(root)):
+                    discovered.append(file_path)
+
+        return discovered
+
+    def _is_explicit_hidden_target(self, target: Path) -> bool:
+        """Return whether the user explicitly targeted a hidden path segment."""
+        target_parts = self._parts_relative_to_repo(target)
+        return any(part.startswith(".") for part in target_parts)
+
+    def _parts_relative_to_repo(self, path: Path) -> tuple[str, ...]:
+        try:
+            return path.relative_to(self.repo_root.resolve()).parts
+        except ValueError:
+            return path.parts
+
+    def _should_descend_directory(self, name: str, *, explicit_hidden_target: bool) -> bool:
+        if name in ALWAYS_EXCLUDED_DIRS:
             return False
-        excluded_dirs = {".git", ".github", "azure-pipeline-validator"}
-        allowed_hidden = {".azure-pipelines"}
-        for part in path.parts:
-            if part in excluded_dirs:
-                return False
-            if part.startswith(".") and part not in allowed_hidden:
-                return False
-        return True
+        if not name.startswith("."):
+            return True
+        if self.hidden_mode == "all":
+            return True
+        if self.hidden_mode == "none":
+            return False
+        if explicit_hidden_target:
+            return True
+        return name in COMMON_HIDDEN_DIRS
+
+    def _matches_include_patterns(self, relative_path: Path) -> bool:
+        for pattern in self.include_patterns:
+            if relative_path.match(pattern):
+                return True
+            if pattern.startswith("**/") and relative_path.match(pattern[3:]):
+                return True
+        return False
 
 
 def iter_single_file(path: Path) -> Iterable[Path]:

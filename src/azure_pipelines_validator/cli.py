@@ -191,6 +191,22 @@ GateModeOption = Annotated[
     ),
 ]
 
+HiddenModeOption = Annotated[
+    Literal["common", "all", "none"],
+    typer.Option(
+        "--hidden-mode",
+        metavar="MODE",
+        show_default=True,
+        rich_help_panel="Execution control",
+        help=(
+            "Hidden directory discovery mode. "
+            "'common' scans common CI/pipeline hidden dirs and explicit hidden targets; "
+            "'all' scans all hidden dirs except hard exclusions; "
+            "'none' skips hidden dirs during directory scans."
+        ),
+    ),
+]
+
 
 @app.command(
     help=(
@@ -212,6 +228,7 @@ def validate(
     vscode_timeout_seconds: VscodeTimeoutOption = 5.0,
     output_format: OutputFormatOption = "text",
     gate_mode: GateModeOption = "authoritative",
+    hidden_mode: HiddenModeOption = "common",
     run_yamllint: Annotated[
         bool,
         typer.Option(
@@ -275,6 +292,7 @@ def validate(
         vscode_timeout_seconds: Diagnostic timeout used by VS Code validation.
         output_format: Reporter output format.
         gate_mode: Gate mode used to determine blocking behavior.
+        hidden_mode: Hidden directory discovery mode.
         run_yamllint: Enable advisory yamllint checks.
         run_schema: Enable advisory schema checks.
         run_preview: Enable preview validation against Azure DevOps.
@@ -310,7 +328,7 @@ def validate(
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=2) from error
 
-    scanner = FileScanner(effective_repo_root)
+    scanner = FileScanner(effective_repo_root, hidden_mode=hidden_mode)
     loader = DocumentLoader()
     wrapper = TemplateWrapper(repo_root=effective_repo_root)
     yamllint_runner = YamllintRunner() if run_yamllint else None

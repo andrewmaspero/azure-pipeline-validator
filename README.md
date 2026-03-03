@@ -118,8 +118,30 @@ Options:
   --vscode-timeout-seconds SECONDS     Diagnostics wait timeout per file.  [default: 5.0]
   --output-format FORMAT               Reporter output format.  [default: text]
   --gate-mode MODE                     Blocking policy for exit code: authoritative|all.  [default: authoritative]
+  --hidden-mode MODE                   Hidden directory discovery: common|all|none.  [default: common]
   --fail-fast / --no-fail-fast         Stop immediately after the first file that fails validation.
   --help                               Show this message and exit.
+```
+
+### Hidden directories
+
+Default hidden discovery mode is `common`, which auto-discovers Azure DevOps-oriented hidden directories such as:
+`.azure-pipelines`, `.azure`, `.devops`, `.ado`, `.azdo`, `.azuredevops`, `.azure-devops`, `.azpipelines`, `.azp`, `.pipelines`, `.pipeline`, `.ci`, `.cicd`.
+
+Examples:
+
+```bash
+# default (common): includes common Azure DevOps hidden directories
+uv run azure-pipeline-validator validate . --repo-root $(pwd)
+
+# strict: skip hidden directories during directory scans
+uv run azure-pipeline-validator validate --hidden-mode none . --repo-root $(pwd)
+
+# broad: include all hidden directories (except hard exclusions like .git/.github)
+uv run azure-pipeline-validator validate --hidden-mode all . --repo-root $(pwd)
+
+# explicit hidden target is included in common mode
+uv run azure-pipeline-validator validate .devops/ --repo-root $(pwd)
 ```
 
 <a id="output-format"></a>

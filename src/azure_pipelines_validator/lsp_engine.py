@@ -39,6 +39,7 @@ _VSIX_ASSET_NAME = "Microsoft.VisualStudio.Services.VSIXPackage"
 _DEFAULT_NODE_VERSION = "lts"
 _DEFAULT_NODE_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "node-runtime"
 _NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
+_NODE_SHASUMS_URL_TEMPLATE = "https://nodejs.org/dist/v{version}/SHASUMS256.txt"
 
 
 class LspValidator:
@@ -607,37 +608,61 @@ def _resolve_node_binary(node_binary: str) -> str:
 
 def _install_node_runtime(*, version_spec: str, cache_root: Path, timeout_seconds: float) -> Path:
     platform_key = _detect_node_platform_key()
+    cached_alias_binary = _find_cached_node_binary_for_alias(
+        version_spec=version_spec,
+        cache_root=cache_root,
+        platform_key=platform_key,
+    )
+    if cached_alias_binary is not None:
+        return cached_alias_binary.resolve()
+
     version = _resolve_node_version(version_spec, timeout_seconds=timeout_seconds)
     install_dir = cache_root / f"node-v{version}" / platform_key
-    node_path = install_dir / ("node.exe" if platform_key.startswith("win-") else "bin/node")
+    node_path = _node_binary_path_for_install(install_dir, platform_key)
     if node_path.exists():
         return node_path.resolve()
 
     base_name = f"node-v{version}-{platform_key}"
     extension = "zip" if platform_key.startswith("win-") else "tar.xz"
-    download_url = f"https://nodejs.org/dist/v{version}/{base_name}.{extension}"
+    archive_filename = f"{base_name}.{extension}"
+    download_url = f"https://nodejs.org/dist/v{version}/{archive_filename}"
+    expected_sha256 = _resolve_node_archive_sha256(
+        version=version,
+        archive_filename=archive_filename,
+        timeout_seconds=timeout_seconds,
+    )
 
     cache_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="node-runtime-") as temp_dir:
         temp_path = Path(temp_dir)
-        archive_path = temp_path / f"{base_name}.{extension}"
+        archive_download_path = temp_path / f"{archive_filename}.download"
+        archive_path = temp_path / archive_filename
         extract_path = temp_path / "extract"
         try:
-            with urlopen(download_url, timeout=timeout_seconds) as response:
-                archive_path.write_bytes(response.read())
+            actual_sha256 = _download_file_with_sha256(
+                download_url=download_url,
+                destination_path=archive_download_path,
+                timeout_seconds=timeout_seconds,
+            )
         except URLError as exc:
             raise LspValidationError(
                 f"Unable to download Node.js runtime archive from {download_url}: {exc}"
             ) from exc
+        if actual_sha256.lower() != expected_sha256.lower():
+            raise LspValidationError(
+                "Downloaded Node.js archive checksum mismatch. "
+                f"expected={expected_sha256.lower()} actual={actual_sha256.lower()}"
+            )
+        archive_download_path.replace(archive_path)
 
         try:
             if extension == "zip":
                 with ZipFile(archive_path) as archive:
-                    archive.extractall(extract_path)
+                    _safe_extract_zip_archive(archive, extract_path)
             else:
                 with tarfile.open(archive_path, mode="r:*") as archive:
-                    archive.extractall(extract_path)
-        except (BadZipFile, tarfile.TarError) as exc:
+                    _safe_extract_tar_archive(archive, extract_path)
+        except (BadZipFile, tarfile.TarError, OSError) as exc:
             raise LspValidationError("Downloaded Node.js archive is invalid.") from exc
 
         extracted_root = extract_path / base_name
@@ -662,6 +687,172 @@ def _install_node_runtime(*, version_spec: str, cache_root: Path, timeout_second
     if not platform_key.startswith("win-"):
         node_path.chmod(node_path.stat().st_mode | 0o111)
     return node_path.resolve()
+
+
+def _find_cached_node_binary_for_alias(
+    *, version_spec: str, cache_root: Path, platform_key: str
+) -> Path | None:
+    alias = version_spec.strip().lower()
+    if alias not in {"lts", "latest"}:
+        return None
+
+    candidates: list[tuple[tuple[int, int, int], float, Path]] = []
+    for version_root in cache_root.glob("node-v*"):
+        if not version_root.is_dir():
+            continue
+        install_dir = version_root / platform_key
+        node_path = _node_binary_path_for_install(install_dir, platform_key)
+        if not node_path.exists():
+            continue
+        candidates.append(
+            (_extract_version_key(version_root.name), node_path.stat().st_mtime, node_path)
+        )
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
+
+
+def _node_binary_path_for_install(install_dir: Path, platform_key: str) -> Path:
+    if platform_key.startswith("win-"):
+        return install_dir / "node.exe"
+    return install_dir / "bin" / "node"
+
+
+def _resolve_node_archive_sha256(
+    *, version: str, archive_filename: str, timeout_seconds: float
+) -> str:
+    shasums_url = _NODE_SHASUMS_URL_TEMPLATE.format(version=version)
+    try:
+        with urlopen(shasums_url, timeout=timeout_seconds) as response:
+            content = response.read().decode("utf-8")
+    except (URLError, UnicodeDecodeError) as exc:
+        raise LspValidationError(
+            f"Unable to resolve Node.js archive checksum from {shasums_url}: {exc}"
+        ) from exc
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        checksum, filename = parts
+        normalized_filename = filename.lstrip("*").strip()
+        if normalized_filename != archive_filename:
+            continue
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", checksum):
+            break
+        return checksum.lower()
+
+    raise LspValidationError(
+        f"Unable to find a SHA256 checksum for Node.js archive '{archive_filename}'."
+    )
+
+
+def _download_file_with_sha256(
+    *, download_url: str, destination_path: Path, timeout_seconds: float
+) -> str:
+    sha256 = hashlib.sha256()
+    with (
+        urlopen(download_url, timeout=timeout_seconds) as response,
+        destination_path.open("wb") as destination,
+    ):
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            destination.write(chunk)
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _safe_extract_zip_archive(archive: ZipFile, extract_root: Path) -> None:
+    for member in archive.infolist():
+        member_path = _validate_archive_member_path(member.filename)
+        target_path = extract_root / member_path
+        _ensure_within_extract_root(extract_root, target_path)
+        if member.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+        _extract_vsix_member(archive, member.filename, target_path)
+
+
+def _safe_extract_tar_archive(archive: tarfile.TarFile, extract_root: Path) -> None:
+    for member in archive.getmembers():
+        member_path = _validate_archive_member_path(member.name)
+        target_path = extract_root / member_path
+        _ensure_within_extract_root(extract_root, target_path)
+
+        if member.isdir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if member.isfile():
+            source = archive.extractfile(member)
+            if source is None:
+                raise LspValidationError(
+                    "Downloaded Node.js archive contains an unreadable file entry."
+                )
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with source, target_path.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
+            target_path.chmod(member.mode & 0o777)
+            continue
+
+        if member.issym():
+            link_target = Path(member.linkname)
+            if link_target.is_absolute():
+                raise LspValidationError(
+                    "Downloaded Node.js archive contains an absolute symlink target."
+                )
+            resolved_link = (target_path.parent / link_target).resolve()
+            _ensure_within_extract_root(extract_root, resolved_link)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.exists() or target_path.is_symlink():
+                target_path.unlink()
+            os.symlink(member.linkname, target_path)
+            continue
+
+        if member.islnk():
+            hard_link_source = extract_root / _validate_archive_member_path(member.linkname)
+            _ensure_within_extract_root(extract_root, hard_link_source)
+            if not hard_link_source.exists():
+                raise LspValidationError(
+                    "Downloaded Node.js archive contains a hard-link entry to a missing target."
+                )
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.exists() or target_path.is_symlink():
+                target_path.unlink()
+            os.link(hard_link_source, target_path)
+            continue
+
+        raise LspValidationError("Downloaded Node.js archive contains unsupported entry types.")
+
+
+def _validate_archive_member_path(member_name: str) -> Path:
+    path = Path(member_name)
+    if path.is_absolute() or ".." in path.parts:
+        raise LspValidationError(
+            f"Downloaded archive contains an unsafe entry path: {member_name!r}"
+        )
+    normalized_parts = tuple(part for part in path.parts if part not in {"", "."})
+    if not normalized_parts:
+        raise LspValidationError("Downloaded archive contains an empty entry path.")
+    return Path(*normalized_parts)
+
+
+def _ensure_within_extract_root(extract_root: Path, target_path: Path) -> None:
+    root = extract_root.resolve()
+    resolved_target = target_path.resolve()
+    try:
+        resolved_target.relative_to(root)
+    except ValueError as exc:
+        raise LspValidationError(
+            f"Downloaded archive path escapes extraction root: {target_path!s}"
+        ) from exc
 
 
 def _resolve_node_version(version_spec: str, *, timeout_seconds: float) -> str:

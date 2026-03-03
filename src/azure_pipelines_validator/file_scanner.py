@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
 HiddenMode = Literal["common", "all", "none"]
+VALID_HIDDEN_MODES = frozenset({"common", "all", "none"})
 
 ALWAYS_EXCLUDED_DIRS = frozenset({".git", ".github"})
 COMMON_HIDDEN_DIRS = frozenset(
@@ -72,6 +73,11 @@ class FileScanner:
             include_patterns: Optional glob patterns used for YAML discovery.
             hidden_mode: Hidden directory behavior (common, all, none).
         """
+        if hidden_mode not in VALID_HIDDEN_MODES:
+            raise ValueError(
+                f"hidden_mode must be one of: common, all, none (received: {hidden_mode!r})."
+            )
+
         self.repo_root = repo_root
         self.include_patterns = include_patterns or ("**/*.yml", "**/*.yaml")
         self.hidden_mode = hidden_mode
@@ -106,6 +112,7 @@ class FileScanner:
 
     def _collect_yaml_files(self, root: Path) -> list[Path]:
         explicit_hidden_target = self._is_explicit_hidden_target(root)
+        include_matches = self._glob_include_matches(root)
         discovered: list[Path] = []
 
         for current_root, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
@@ -120,10 +127,18 @@ class FileScanner:
 
             for filename in sorted(filenames):
                 file_path = current_path / filename
-                if self._matches_include_patterns(file_path.relative_to(root)):
+                if file_path.resolve() in include_matches:
                     discovered.append(file_path)
 
         return discovered
+
+    def _glob_include_matches(self, root: Path) -> set[Path]:
+        matches: set[Path] = set()
+        for pattern in self.include_patterns:
+            for candidate in root.glob(pattern):
+                if candidate.is_file():
+                    matches.add(candidate.resolve())
+        return matches
 
     def _is_explicit_hidden_target(self, target: Path) -> bool:
         """Return whether the user explicitly targeted a hidden path segment."""
@@ -148,14 +163,6 @@ class FileScanner:
         if explicit_hidden_target:
             return True
         return name in COMMON_HIDDEN_DIRS
-
-    def _matches_include_patterns(self, relative_path: Path) -> bool:
-        for pattern in self.include_patterns:
-            if relative_path.match(pattern):
-                return True
-            if pattern.startswith("**/") and relative_path.match(pattern[3:]):
-                return True
-        return False
 
 
 def iter_single_file(path: Path) -> Iterable[Path]:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +44,17 @@ def _make_vsix_bytes(*, include_required_files: bool = True) -> bytes:
             archive.writestr("extension/service-schema.json", "{}")
         else:
             archive.writestr("extension/README.md", "noop")
+    return stream.getvalue()
+
+
+def _make_node_tar_xz_bytes(base_name: str) -> bytes:
+    stream = io.BytesIO()
+    payload = b"#!/bin/sh\nnode --version\n"
+    with tarfile.open(fileobj=stream, mode="w:xz") as archive:
+        node_info = tarfile.TarInfo(name=f"{base_name}/bin/node")
+        node_info.size = len(payload)
+        node_info.mode = 0o755
+        archive.addfile(node_info, io.BytesIO(payload))
     return stream.getvalue()
 
 
@@ -551,6 +564,133 @@ def test_install_node_runtime_uses_cached_binary(
         )
         == cached.resolve()
     )
+
+
+def test_install_node_runtime_uses_cached_alias_binary_when_network_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+
+    cached = tmp_path / "node-v22.14.0" / "linux-x64" / "bin" / "node"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def _raise_network_error(*_args, **_kwargs):
+        raise URLError("offline")
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _raise_network_error)
+
+    assert (
+        _install_node_runtime(
+            version_spec="lts",
+            cache_root=tmp_path,
+            timeout_seconds=1.0,
+        )
+        == cached.resolve()
+    )
+
+
+def test_install_node_runtime_downloads_verifies_checksum_and_extracts_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_version",
+        lambda *_args, **_kwargs: "22.14.0",
+    )
+
+    base_name = "node-v22.14.0-linux-x64"
+    archive_name = f"{base_name}.tar.xz"
+    archive_bytes = _make_node_tar_xz_bytes(base_name)
+    archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+    shasums = f"{archive_sha256}  {archive_name}\n".encode("utf-8")
+
+    class _Response:
+        def __init__(self, payload: bytes) -> None:
+            self._stream = io.BytesIO(payload)
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type, exc, exc_tb) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+    def _fake_urlopen(url: str, *args, **kwargs) -> _Response:
+        del args, kwargs
+        if url.endswith("SHASUMS256.txt"):
+            return _Response(shasums)
+        if url.endswith(archive_name):
+            return _Response(archive_bytes)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _fake_urlopen)
+
+    node_path = _install_node_runtime(
+        version_spec="22.14.0",
+        cache_root=tmp_path,
+        timeout_seconds=1.0,
+    )
+
+    expected = tmp_path / "node-v22.14.0" / "linux-x64" / "bin" / "node"
+    assert node_path == expected.resolve()
+    assert expected.exists()
+
+
+def test_install_node_runtime_rejects_checksum_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._detect_node_platform_key",
+        lambda: "linux-x64",
+    )
+    monkeypatch.setattr(
+        "azure_pipelines_validator.lsp_engine._resolve_node_version",
+        lambda *_args, **_kwargs: "22.14.0",
+    )
+
+    base_name = "node-v22.14.0-linux-x64"
+    archive_name = f"{base_name}.tar.xz"
+    archive_bytes = _make_node_tar_xz_bytes(base_name)
+    shasums = f"{'0' * 64}  {archive_name}\n".encode("utf-8")
+
+    class _Response:
+        def __init__(self, payload: bytes) -> None:
+            self._stream = io.BytesIO(payload)
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, exc_type, exc, exc_tb) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            return self._stream.read(size)
+
+    def _fake_urlopen(url: str, *args, **kwargs) -> _Response:
+        del args, kwargs
+        if url.endswith("SHASUMS256.txt"):
+            return _Response(shasums)
+        if url.endswith(archive_name):
+            return _Response(archive_bytes)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("azure_pipelines_validator.lsp_engine.urlopen", _fake_urlopen)
+
+    with pytest.raises(LspValidationError, match="checksum mismatch"):
+        _install_node_runtime(
+            version_spec="22.14.0",
+            cache_root=tmp_path,
+            timeout_seconds=1.0,
+        )
 
 
 def test_handle_server_request_branches(tmp_path: Path) -> None:

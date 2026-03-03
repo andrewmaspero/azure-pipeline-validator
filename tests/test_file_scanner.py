@@ -132,6 +132,28 @@ def test_collect_resolves_relative_target_and_deduplicates(tmp_path: Path) -> No
     assert collected == (yaml_file.resolve(),)
 
 
+def test_collect_preserves_glob_root_semantics_for_non_recursive_patterns(
+    tmp_path: Path,
+) -> None:
+    top_level = tmp_path / "pipeline.yml"
+    top_level.write_text("steps: []", encoding="utf-8")
+    nested_dir = tmp_path / "nested"
+    nested_dir.mkdir()
+    nested_file = nested_dir / "pipeline.yml"
+    nested_file.write_text("steps: []", encoding="utf-8")
+
+    scanner = FileScanner(tmp_path, include_patterns=("*.yml",))
+    collected = scanner.collect(tmp_path)
+
+    assert collected == (top_level.resolve(),)
+    assert nested_file.resolve() not in collected
+
+
+def test_init_rejects_invalid_hidden_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="hidden_mode must be one of"):
+        FileScanner(tmp_path, hidden_mode="invalid")  # type: ignore[arg-type]
+
+
 def test_iter_single_file_yields_path(tmp_path: Path) -> None:
     target = tmp_path / "single.yml"
     target.write_text("trigger: none", encoding="utf-8")

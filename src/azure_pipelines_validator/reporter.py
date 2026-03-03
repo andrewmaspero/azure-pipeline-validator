@@ -13,6 +13,8 @@ from rich.text import Text
 
 from .models import StageName, StageStatus, ValidationSummary
 
+REPORT_SCHEMA_VERSION = 2
+
 
 class Reporter:
     """Renders a concise summary using Rich tables."""
@@ -131,7 +133,7 @@ class Reporter:
             )
 
         return {
-            "schema_version": 1,
+            "schema_version": REPORT_SCHEMA_VERSION,
             "summary": {
                 "success": summary.success,
                 "total_files": summary.total_files,

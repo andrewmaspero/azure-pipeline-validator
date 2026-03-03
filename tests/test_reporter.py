@@ -14,7 +14,7 @@ from azure_pipelines_validator.models import (
     ValidationSummary,
     YamllintFinding,
 )
-from azure_pipelines_validator.reporter import Reporter
+from azure_pipelines_validator.reporter import REPORT_SCHEMA_VERSION, Reporter
 
 
 def test_reporter_renders_summary(tmp_path: Path) -> None:
@@ -128,7 +128,7 @@ def test_reporter_json_output_contract(tmp_path: Path) -> None:
     reporter.display(summary, output_format="json")
 
     payload = json.loads(console.export_text())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == REPORT_SCHEMA_VERSION
     assert payload["summary"]["fail_fast"] is True
     assert payload["summary"]["stopped_early"] is True
     assert payload["summary"]["discovered_files"] == 3

@@ -28,15 +28,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          package_version="$(
-            python - <<'PY'
-            import tomllib
-            from pathlib import Path
-
-            payload = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-            print(payload["project"]["version"])
-            PY
-          )"
+          package_version="$(python -c $'import tomllib\nfrom pathlib import Path\npayload = tomllib.loads(Path(\"pyproject.toml\").read_text(encoding=\"utf-8\"))\nprint(payload[\"project\"][\"version\"])')"
           echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
           echo "release_tag=v${package_version}" >> "${GITHUB_OUTPUT}"
 
@@ -59,30 +51,7 @@ jobs:
           PACKAGE_VERSION: ${{ needs.resolve-version.outputs.version }}
         run: |
           set -euo pipefail
-          skip_publish="$(
-            python - <<'PY'
-            import json
-            import os
-            import urllib.error
-            import urllib.request
-
-            package_name = os.environ["PACKAGE_NAME"]
-            version = os.environ["PACKAGE_VERSION"]
-            url = f"https://pypi.org/pypi/{package_name}/json"
-
-            try:
-                with urllib.request.urlopen(url, timeout=15) as response:
-                    payload = json.load(response)
-            except urllib.error.HTTPError as error:
-                if error.code == 404:
-                    print("false")
-                else:
-                    raise
-            else:
-                releases = payload.get("releases", {})
-                print("true" if releases.get(version) else "false")
-            PY
-          )"
+          skip_publish="$(python -c $'import json\nimport os\nimport urllib.error\nimport urllib.request\n\npackage_name = os.environ[\"PACKAGE_NAME\"]\nversion = os.environ[\"PACKAGE_VERSION\"]\nurl = f\"https://pypi.org/pypi/{package_name}/json\"\n\ntry:\n    with urllib.request.urlopen(url, timeout=15) as response:\n        payload = json.load(response)\nexcept urllib.error.HTTPError as error:\n    if error.code == 404:\n        print(\"false\")\n    else:\n        raise\nelse:\n    releases = payload.get(\"releases\", {})\n    print(\"true\" if releases.get(version) else \"false\")')"
           echo "skip_publish=${skip_publish}" >> "${GITHUB_OUTPUT}"
 
       - name: Install uv

@@ -8,8 +8,8 @@ from typer.testing import CliRunner
 from azure_pipelines_validator import cli
 from azure_pipelines_validator.exceptions import (
     AzureDevOpsError,
+    LspValidationError,
     SchemaUnavailableError,
-    VscodeValidationError,
 )
 from azure_pipelines_validator.models import PreviewResponse
 
@@ -50,7 +50,7 @@ def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode"],
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
     )
 
@@ -97,7 +97,7 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
             "refs/heads/dev",
             "--azdo-timeout-seconds",
             "12",
-            "--skip-vscode",
+            "--skip-lsp",
         ],
         env={},
     )
@@ -134,7 +134,7 @@ def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
 
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode"],
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
         catch_exceptions=False,
     )
@@ -155,7 +155,7 @@ def test_cli_yamllint_only_runs_without_env(monkeypatch, tmp_path: Path) -> None
             str(tmp_path),
             "--skip-schema",
             "--skip-preview",
-            "--skip-vscode",
+            "--skip-lsp",
         ],
         env={},
     )
@@ -191,7 +191,7 @@ def test_cli_json_output_format(monkeypatch, tmp_path: Path) -> None:
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
-            "--skip-vscode",
+            "--skip-lsp",
             "--output-format",
             "json",
         ],
@@ -201,7 +201,7 @@ def test_cli_json_output_format(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["summary"]["success"] is True
-    assert payload["files"][0]["stages"]["vscode"]["status"] == "skipped"
+    assert payload["files"][0]["stages"]["lsp"]["status"] == "skipped"
 
 
 def test_cli_ndjson_output_format(monkeypatch, tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ def test_cli_ndjson_output_format(monkeypatch, tmp_path: Path) -> None:
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
-            "--skip-vscode",
+            "--skip-lsp",
             "--output-format",
             "ndjson",
         ],
@@ -276,7 +276,7 @@ def test_cli_default_authoritative_gate_ignores_yamllint_only_failures(
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
-            "--skip-vscode",
+            "--skip-lsp",
             "--run-yamllint",
         ],
         env=env_vars(),
@@ -313,7 +313,7 @@ def test_cli_gate_mode_all_blocks_on_yamllint_failures(monkeypatch, tmp_path: Pa
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
-            "--skip-vscode",
+            "--skip-lsp",
             "--run-yamllint",
             "--gate-mode",
             "all",
@@ -348,7 +348,7 @@ def test_cli_run_schema_emits_deprecation_warning(monkeypatch, tmp_path: Path) -
 
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode", "--run-schema"],
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp", "--run-schema"],
         env=env_vars(),
     )
 
@@ -383,7 +383,7 @@ def test_cli_json_summary_includes_warnings(monkeypatch, tmp_path: Path) -> None
             str(tmp_path),
             "--repo-root",
             str(tmp_path),
-            "--skip-vscode",
+            "--skip-lsp",
             "--run-schema",
             "--output-format",
             "json",
@@ -398,15 +398,15 @@ def test_cli_json_summary_includes_warnings(monkeypatch, tmp_path: Path) -> None
     )
 
 
-def test_cli_reports_vscode_initialization_error(monkeypatch, tmp_path: Path) -> None:
+def test_cli_reports_lsp_initialization_error(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "pipeline.yml"
     target.write_text("trigger: none\n", encoding="utf-8")
 
-    class RaisingVscodeValidator:
+    class RaisingLspValidator:
         def __init__(self, *args, **kwargs):
-            raise VscodeValidationError("vscode unavailable")
+            raise LspValidationError("lsp unavailable")
 
-    monkeypatch.setattr(cli, "VscodeValidator", RaisingVscodeValidator)
+    monkeypatch.setattr(cli, "LspValidator", RaisingLspValidator)
 
     result = runner.invoke(
         cli.app,
@@ -415,7 +415,18 @@ def test_cli_reports_vscode_initialization_error(monkeypatch, tmp_path: Path) ->
     )
 
     assert result.exit_code == 2
-    assert "vscode unavailable" in result.stdout
+    assert "lsp unavailable" in result.stdout
+
+
+def test_cli_rejects_legacy_vscode_flags(tmp_path: Path) -> None:
+    result = runner.invoke(
+        cli.app,
+        [str(tmp_path), "--skip-vscode"],
+        env=env_vars(),
+    )
+
+    assert result.exit_code == 2
+    assert "No such option: --skip-vscode" in result.output
 
 
 def test_cli_handles_schema_unavailable_error(monkeypatch, tmp_path: Path) -> None:
@@ -436,7 +447,7 @@ def test_cli_handles_schema_unavailable_error(monkeypatch, tmp_path: Path) -> No
 
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-vscode"],
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
     )
 
@@ -457,7 +468,7 @@ def test_cli_default_common_mode_discovers_devops_hidden_directory(tmp_path: Pat
             str(tmp_path),
             "--skip-preview",
             "--skip-schema",
-            "--skip-vscode",
+            "--skip-lsp",
             "--run-yamllint",
         ],
         env={},
@@ -482,7 +493,7 @@ def test_cli_hidden_mode_none_excludes_devops_hidden_directory(tmp_path: Path) -
             "none",
             "--skip-preview",
             "--skip-schema",
-            "--skip-vscode",
+            "--skip-lsp",
             "--run-yamllint",
         ],
         env={},
@@ -507,7 +518,7 @@ def test_cli_hidden_mode_all_includes_non_common_hidden_directory(tmp_path: Path
             "all",
             "--skip-preview",
             "--skip-schema",
-            "--skip-vscode",
+            "--skip-lsp",
             "--run-yamllint",
         ],
         env={},

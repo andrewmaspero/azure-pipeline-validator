@@ -1,7 +1,7 @@
-"""VS Code Azure Pipelines language-server backed validation.
+"""Azure Pipelines language-server backed validation.
 
-This module executes validation through the Azure Pipelines VS Code language
-server so diagnostics match editor behavior.
+This module executes validation through the Azure DevOps pipeline language
+server (LSP) so diagnostics match editor behavior.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from urllib.error import URLError
 from urllib.request import urlopen
 from zipfile import BadZipFile, ZipFile
 
-from .exceptions import VscodeValidationError
-from .models import VscodeFinding
+from .exceptions import LspValidationError
+from .models import LspFinding
 from .yaml_processing import YamlDocument
 
 _EXTENSION_PREFIX = "ms-azure-devops.azure-pipelines-"
@@ -34,15 +34,15 @@ _DEFAULT_EXTENSION_PUBLISHER = "ms-azure-devops"
 _DEFAULT_EXTENSION_NAME = "azure-pipelines"
 _DEFAULT_EXTENSION_VERSION = "latest"
 _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30.0
-_DEFAULT_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "vscode-assets"
+_DEFAULT_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "lsp-assets"
 _VSIX_ASSET_NAME = "Microsoft.VisualStudio.Services.VSIXPackage"
 _DEFAULT_NODE_VERSION = "lts"
 _DEFAULT_NODE_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "node-runtime"
 _NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
 
 
-class VscodeValidator:
-    """Runs diagnostics using the Azure Pipelines VS Code language server."""
+class LspValidator:
+    """Runs diagnostics using the Azure DevOps pipeline language server (LSP)."""
 
     def __init__(
         self,
@@ -53,18 +53,18 @@ class VscodeValidator:
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         node_binary: str = "node",
     ) -> None:
-        """Initializes a VS Code language-server validator.
+        """Initializes an Azure LSP language-server validator.
 
         Args:
             repo_root: Repository root used for LSP workspace initialization.
             server_path: Optional explicit path to the language server JavaScript
                 entrypoint.
-            schema_path: Optional explicit path to the extension schema file.
+            schema_path: Optional explicit path to the language-server schema file.
             timeout_seconds: Per-request timeout budget for LSP communication.
             node_binary: Node.js executable used to launch the language server.
 
         Raises:
-            VscodeValidationError: If server/schema paths cannot be resolved.
+            LspValidationError: If server/schema paths cannot be resolved.
         """
         self._repo_root = repo_root.resolve()
         self._timeout_seconds = timeout_seconds
@@ -86,7 +86,7 @@ class VscodeValidator:
         """Returns the resolved schema path used by the language server."""
         return self._schema_path
 
-    def run(self, documents: Sequence[YamlDocument]) -> dict[Path, tuple[VscodeFinding, ...]]:
+    def run(self, documents: Sequence[YamlDocument]) -> dict[Path, tuple[LspFinding, ...]]:
         """Runs LSP diagnostics for a batch of YAML documents.
 
         Args:
@@ -96,7 +96,7 @@ class VscodeValidator:
             Mapping from document path to the tuple of emitted findings.
 
         Raises:
-            VscodeValidationError: If the language server cannot initialize or a
+            LspValidationError: If the language server cannot initialize or a
                 document diagnostic request times out.
         """
         if not documents:
@@ -108,7 +108,7 @@ class VscodeValidator:
             timeout_seconds=self._timeout_seconds,
             node_binary=self._node_binary,
         ) as session:
-            results: dict[Path, tuple[VscodeFinding, ...]] = {}
+            results: dict[Path, tuple[LspFinding, ...]] = {}
             for document in documents:
                 results[document.path] = session.validate_document(document)
             return results
@@ -139,8 +139,8 @@ class _LspSession:
                 env={**os.environ, "VSCODE_NLS_CONFIG": "{}"},
             )
         except FileNotFoundError as error:
-            raise VscodeValidationError(
-                f"Unable to launch VS Code language server because '{node_binary}' was not found."
+            raise LspValidationError(
+                f"Unable to launch Azure LSP language server because '{node_binary}' was not found."
             ) from error
         self._next_id = 1
         self._responses: dict[int, dict[str, Any]] = {}
@@ -162,7 +162,7 @@ class _LspSession:
                 except subprocess.TimeoutExpired:
                     self._process.kill()
 
-    def validate_document(self, document: YamlDocument) -> tuple[VscodeFinding, ...]:
+    def validate_document(self, document: YamlDocument) -> tuple[LspFinding, ...]:
         uri = document.path.resolve().as_uri()
         self._diagnostics_by_uri.pop(uri, None)
 
@@ -184,17 +184,17 @@ class _LspSession:
         if diagnostics is None:
             stderr = self._drain_stderr()
             details = f" (stderr: {stderr})" if stderr else ""
-            raise VscodeValidationError(
-                f"Timed out waiting for VS Code diagnostics for {document.path}{details}"
+            raise LspValidationError(
+                f"Timed out waiting for Azure LSP diagnostics for {document.path}{details}"
             )
 
-        findings: list[VscodeFinding] = []
+        findings: list[LspFinding] = []
         for item in diagnostics:
             start = item.get("range", {}).get("start", {})
             line = int(start.get("line", 0)) + 1
             column = int(start.get("character", 0)) + 1
             findings.append(
-                VscodeFinding(
+                LspFinding(
                     path=document.path,
                     line=line,
                     column=column,
@@ -218,8 +218,8 @@ class _LspSession:
             },
         )
         if response.get("error"):
-            raise VscodeValidationError(
-                f"VS Code language server initialize failed: {response['error']}"
+            raise LspValidationError(
+                f"Azure LSP language server initialize failed: {response['error']}"
             )
 
         self._send_notification("initialized", {})
@@ -254,7 +254,7 @@ class _LspSession:
             self._pump_once(remaining)
             if request_id in self._responses:
                 return self._responses.pop(request_id)
-        raise VscodeValidationError(f"Timed out waiting for LSP response to '{method}'")
+        raise LspValidationError(f"Timed out waiting for LSP response to '{method}'")
 
     def _send_notification(self, method: str, params: Any) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
@@ -311,7 +311,7 @@ class _LspSession:
 
     def _send(self, payload: dict[str, Any]) -> None:
         if self._process.stdin is None:
-            raise VscodeValidationError("VS Code language server stdin is unavailable")
+            raise LspValidationError("Azure LSP language server stdin is unavailable")
         content = json.dumps(payload).encode("utf-8")
         header = f"Content-Length: {len(content)}\r\n\r\n".encode("ascii")
         self._process.stdin.write(header + content)
@@ -319,7 +319,7 @@ class _LspSession:
 
     def _read_message(self, timeout_seconds: float) -> dict[str, Any] | None:
         if self._process.stdout is None:
-            raise VscodeValidationError("VS Code language server stdout is unavailable")
+            raise LspValidationError("Azure LSP language server stdout is unavailable")
         fd = self._process.stdout.fileno()
         deadline = time.monotonic() + timeout_seconds
 
@@ -337,7 +337,7 @@ class _LspSession:
                 return None
             chunk = os.read(fd, 8192)
             if not chunk:
-                raise VscodeValidationError("VS Code language server closed unexpectedly")
+                raise LspValidationError("Azure LSP language server closed unexpectedly")
             self._read_buffer.extend(chunk)
         return None
 
@@ -384,10 +384,10 @@ def _try_parse_message(buffer: bytearray) -> tuple[dict[str, Any], int] | None:
             try:
                 content_length = int(text.split(":", 1)[1].strip())
             except ValueError as exc:
-                raise VscodeValidationError(f"Invalid content-length header: {text}") from exc
+                raise LspValidationError(f"Invalid content-length header: {text}") from exc
             break
     if content_length <= 0:
-        raise VscodeValidationError("Missing Content-Length header from language server")
+        raise LspValidationError("Missing Content-Length header from language server")
 
     payload_start = header_end + 4
     payload_end = payload_start + content_length
@@ -420,9 +420,7 @@ def _resolve_server_and_schema(
     schema_path: Path | None,
 ) -> tuple[Path, Path]:
     if (server_path is None) != (schema_path is None):
-        raise VscodeValidationError(
-            "Pass both --vscode-server-path and --vscode-schema-path together."
-        )
+        raise LspValidationError("Pass both --lsp-server-path and --lsp-schema-path together.")
 
     if server_path and schema_path:
         return _validate_paths(server_path.resolve(), schema_path.resolve())
@@ -441,9 +439,9 @@ def _resolve_server_and_schema(
 
 def _validate_paths(server_path: Path, schema_path: Path) -> tuple[Path, Path]:
     if not server_path.exists():
-        raise VscodeValidationError(f"VS Code language server not found: {server_path}")
+        raise LspValidationError(f"Azure LSP language server not found: {server_path}")
     if not schema_path.exists():
-        raise VscodeValidationError(f"VS Code schema file not found: {schema_path}")
+        raise LspValidationError(f"Azure LSP schema file not found: {schema_path}")
     return server_path, schema_path
 
 
@@ -477,11 +475,11 @@ def _discover_installed_extension() -> tuple[Path, Path] | None:
 
 
 def _resolve_bootstrapped_extension() -> tuple[Path, Path]:
-    publisher = os.getenv("AZP_VALIDATOR_VSCODE_PUBLISHER", _DEFAULT_EXTENSION_PUBLISHER)
-    extension = os.getenv("AZP_VALIDATOR_VSCODE_EXTENSION", _DEFAULT_EXTENSION_NAME)
-    version = os.getenv("AZP_VALIDATOR_VSCODE_VERSION", _DEFAULT_EXTENSION_VERSION)
+    publisher = os.getenv("AZP_VALIDATOR_LSP_PUBLISHER", _DEFAULT_EXTENSION_PUBLISHER)
+    extension = os.getenv("AZP_VALIDATOR_LSP_EXTENSION", _DEFAULT_EXTENSION_NAME)
+    version = os.getenv("AZP_VALIDATOR_LSP_VERSION", _DEFAULT_EXTENSION_VERSION)
     cache_root = Path(
-        os.getenv("AZP_VALIDATOR_VSCODE_CACHE_DIR", str(_DEFAULT_CACHE_DIR))
+        os.getenv("AZP_VALIDATOR_LSP_CACHE_DIR", str(_DEFAULT_CACHE_DIR))
     ).expanduser()
     cache_dir = cache_root / f"{publisher}.{extension}" / version
     server_path = cache_dir / "dist" / "server.js"
@@ -489,19 +487,19 @@ def _resolve_bootstrapped_extension() -> tuple[Path, Path]:
     if server_path.exists() and schema_path.exists():
         return server_path.resolve(), schema_path.resolve()
 
-    if _env_flag("AZP_VALIDATOR_VSCODE_OFFLINE"):
-        raise VscodeValidationError(
-            "VS Code assets are not cached and offline mode is enabled. "
-            "Pre-seed the cache or disable AZP_VALIDATOR_VSCODE_OFFLINE."
+    if _env_flag("AZP_VALIDATOR_LSP_OFFLINE"):
+        raise LspValidationError(
+            "Azure LSP assets are not cached and offline mode is enabled. "
+            "Pre-seed the cache or disable AZP_VALIDATOR_LSP_OFFLINE."
         )
 
     download_url = (
         f"https://{publisher}.gallery.vsassets.io/_apis/public/gallery/publisher/"
         f"{publisher}/extension/{extension}/{version}/assetbyname/{_VSIX_ASSET_NAME}"
     )
-    expected_sha256 = os.getenv("AZP_VALIDATOR_VSCODE_SHA256")
+    expected_sha256 = os.getenv("AZP_VALIDATOR_LSP_SHA256")
     timeout_seconds = _env_float(
-        "AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS",
+        "AZP_VALIDATOR_LSP_DOWNLOAD_TIMEOUT_SECONDS",
         _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
     )
     _bootstrap_extension_assets(
@@ -521,7 +519,7 @@ def _bootstrap_extension_assets(
     expected_sha256: str | None,
 ) -> None:
     cache_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="vscode-assets-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="lsp-assets-") as temp_dir:
         temp_path = Path(temp_dir)
         archive_path = temp_path / "extension.vsix"
         extract_path = temp_path / "extract"
@@ -529,14 +527,14 @@ def _bootstrap_extension_assets(
             with urlopen(download_url, timeout=timeout_seconds) as response:
                 archive_path.write_bytes(response.read())
         except URLError as exc:
-            raise VscodeValidationError(
-                f"Unable to download Azure Pipelines VS Code extension assets: {exc}"
+            raise LspValidationError(
+                f"Unable to download Azure Pipelines language-server assets: {exc}"
             ) from exc
 
         if expected_sha256:
             actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
             if actual_sha256.lower() != expected_sha256.lower():
-                raise VscodeValidationError(
+                raise LspValidationError(
                     "Downloaded VSIX checksum mismatch. "
                     f"expected={expected_sha256.lower()} actual={actual_sha256.lower()}"
                 )
@@ -552,7 +550,7 @@ def _bootstrap_extension_assets(
                     extract_path / "service-schema.json",
                 )
         except (BadZipFile, KeyError) as exc:
-            raise VscodeValidationError(
+            raise LspValidationError(
                 "Downloaded VSIX archive is invalid or missing required files."
             ) from exc
 
@@ -578,8 +576,8 @@ def _resolve_node_binary(node_binary: str) -> str:
         return resolved
 
     if node_binary != "node":
-        raise VscodeValidationError(
-            f"Unable to launch VS Code language server because '{node_binary}' was not found."
+        raise LspValidationError(
+            f"Unable to launch Azure LSP language server because '{node_binary}' was not found."
         )
 
     timeout_seconds = _env_float(
@@ -598,10 +596,10 @@ def _resolve_node_binary(node_binary: str) -> str:
                 timeout_seconds=timeout_seconds,
             )
         )
-    except VscodeValidationError:
+    except LspValidationError:
         raise
     except Exception as exc:
-        raise VscodeValidationError(
+        raise LspValidationError(
             "Node.js runtime auto-install failed. Install Node.js manually or set "
             "AZP_VALIDATOR_NODE_VERSION/AZP_VALIDATOR_NODE_CACHE_DIR."
         ) from exc
@@ -628,7 +626,7 @@ def _install_node_runtime(*, version_spec: str, cache_root: Path, timeout_second
             with urlopen(download_url, timeout=timeout_seconds) as response:
                 archive_path.write_bytes(response.read())
         except URLError as exc:
-            raise VscodeValidationError(
+            raise LspValidationError(
                 f"Unable to download Node.js runtime archive from {download_url}: {exc}"
             ) from exc
 
@@ -640,11 +638,11 @@ def _install_node_runtime(*, version_spec: str, cache_root: Path, timeout_second
                 with tarfile.open(archive_path, mode="r:*") as archive:
                     archive.extractall(extract_path)
         except (BadZipFile, tarfile.TarError) as exc:
-            raise VscodeValidationError("Downloaded Node.js archive is invalid.") from exc
+            raise LspValidationError("Downloaded Node.js archive is invalid.") from exc
 
         extracted_root = extract_path / base_name
         if not extracted_root.exists():
-            raise VscodeValidationError(
+            raise LspValidationError(
                 "Downloaded Node.js archive did not contain expected runtime layout."
             )
 
@@ -658,7 +656,7 @@ def _install_node_runtime(*, version_spec: str, cache_root: Path, timeout_second
         temp_target.replace(install_dir)
 
     if not node_path.exists():
-        raise VscodeValidationError(
+        raise LspValidationError(
             "Node.js runtime install completed but the node executable was not found."
         )
     if not platform_key.startswith("win-"):
@@ -671,7 +669,7 @@ def _resolve_node_version(version_spec: str, *, timeout_seconds: float) -> str:
     if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
         return value.lstrip("v")
     if value not in {"lts", "latest"}:
-        raise VscodeValidationError(
+        raise LspValidationError(
             "Environment variable AZP_VALIDATOR_NODE_VERSION must be 'lts', 'latest', "
             "or a full semantic version like '22.13.1'."
         )
@@ -680,10 +678,10 @@ def _resolve_node_version(version_spec: str, *, timeout_seconds: float) -> str:
         with urlopen(_NODE_INDEX_URL, timeout=timeout_seconds) as response:
             releases = json.loads(response.read().decode("utf-8"))
     except (URLError, json.JSONDecodeError) as exc:
-        raise VscodeValidationError(f"Unable to resolve Node.js {value} version: {exc}") from exc
+        raise LspValidationError(f"Unable to resolve Node.js {value} version: {exc}") from exc
 
     if not isinstance(releases, list):
-        raise VscodeValidationError("Node.js release index response was not a list.")
+        raise LspValidationError("Node.js release index response was not a list.")
 
     for release in releases:
         if not isinstance(release, dict):
@@ -693,7 +691,7 @@ def _resolve_node_version(version_spec: str, *, timeout_seconds: float) -> str:
         raw_version = str(release.get("version", ""))
         if re.fullmatch(r"v\d+\.\d+\.\d+", raw_version):
             return raw_version.lstrip("v")
-    raise VscodeValidationError(f"Could not find a Node.js {value} release in the upstream index.")
+    raise LspValidationError(f"Could not find a Node.js {value} release in the upstream index.")
 
 
 def _detect_node_platform_key() -> str:
@@ -713,7 +711,7 @@ def _detect_node_platform_key() -> str:
         return f"linux-{normalized_machine}"
     if system == "windows" and normalized_machine in {"x64", "arm64"}:
         return f"win-{normalized_machine}"
-    raise VscodeValidationError(
+    raise LspValidationError(
         f"Automatic Node.js installation is not supported on this platform: {system}/{machine}"
     )
 
@@ -732,9 +730,9 @@ def _env_float(name: str, default: float) -> float:
     try:
         value = float(raw)
     except ValueError as exc:
-        raise VscodeValidationError(f"Environment variable {name} must be a number.") from exc
+        raise LspValidationError(f"Environment variable {name} must be a number.") from exc
     if value <= 0:
-        raise VscodeValidationError(f"Environment variable {name} must be greater than zero.")
+        raise LspValidationError(f"Environment variable {name} must be greater than zero.")
     return value
 
 

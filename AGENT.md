@@ -26,5 +26,6 @@
   - `uv run python -m pytest --cov=src/azure_pipelines_validator --cov-report=term-missing --cov-fail-under=90`
 
 ## Runtime Expectations
-- VS Code validation requires Node.js.
+- Azure LSP validation requires Node.js.
 - The validator auto-detects `node` on `PATH` and auto-installs a compatible runtime to user cache when missing.
+- Stage naming uses `lsp` (not `vscode`) in code, CLI options, and machine-readable output.

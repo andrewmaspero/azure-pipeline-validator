@@ -5,20 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from .azure_devops import AzureDevOpsClient
-from .exceptions import AzureDevOpsError, VscodeValidationError
+from .exceptions import AzureDevOpsError, LspValidationError
 from .file_scanner import FileScanner
+from .lsp_engine import LspValidator
 from .models import (
     FileValidationResult,
     GateMode,
+    LspFinding,
     PreviewFinding,
     SchemaFinding,
     ValidationOptions,
     ValidationSummary,
-    VscodeFinding,
     YamllintFinding,
 )
 from .schema_engine import SchemaValidator
-from .vscode_engine import VscodeValidator
 from .yaml_processing import DocumentLoader, TemplateWrapper, YamlDocument
 from .yamllint_engine import YamllintRunner
 
@@ -34,7 +34,7 @@ class ValidationService:
         wrapper: TemplateWrapper,
         yamllint_runner: YamllintRunner | None = None,
         schema_validator: SchemaValidator | None = None,
-        vscode_validator: VscodeValidator | None = None,
+        lsp_validator: LspValidator | None = None,
     ) -> None:
         """Initialize the validation service.
 
@@ -45,7 +45,7 @@ class ValidationService:
             wrapper: Template wrapper used for preview/schema inputs.
             yamllint_runner: Optional yamllint runner, enabled when requested.
             schema_validator: Optional Azure schema validator for soft checks.
-            vscode_validator: Optional VS Code language-server validator.
+            lsp_validator: Optional Azure LSP language-server validator.
         """
         self._client = client
         self._scanner = scanner
@@ -53,7 +53,7 @@ class ValidationService:
         self._wrapper = wrapper
         self._yamllint_runner = yamllint_runner
         self._schema_validator = schema_validator
-        self._vscode_validator = vscode_validator
+        self._lsp_validator = lsp_validator
 
     def validate(self, target: Path, options: ValidationOptions) -> ValidationSummary:
         """Validate a target file or directory and produce a summary report.
@@ -75,7 +75,7 @@ class ValidationService:
         for file_path in files:
             document = self._loader.load(file_path)
             lint_findings = self._run_lint(document, options)
-            vscode_findings, vscode_error = self._run_vscode(document, options)
+            lsp_findings, lsp_error = self._run_lsp(document, options)
 
             wrapped_content: str | None = None
             if options.include_schema or options.include_preview:
@@ -91,10 +91,10 @@ class ValidationService:
                 yamllint=lint_findings,
                 schema=schema_findings,
                 preview=preview_findings,
-                vscode=vscode_findings,
+                lsp=lsp_findings,
                 final_yaml=final_yaml,
                 preview_error=preview_error,
-                vscode_error=vscode_error,
+                lsp_error=lsp_error,
             )
             results.append(result)
             if options.fail_fast and not result.is_successful:
@@ -104,7 +104,7 @@ class ValidationService:
             include_lint=options.include_lint,
             include_schema=options.include_schema,
             include_preview=options.include_preview,
-            include_vscode=options.include_vscode,
+            include_lsp=options.include_lsp,
             gate_mode=options.gate_mode,
             fail_fast=options.fail_fast,
             stopped_early=options.fail_fast and len(results) < len(files),
@@ -116,16 +116,14 @@ class ValidationService:
     def _build_warnings(options: ValidationOptions) -> list[str]:
         warnings: list[str] = []
         if options.include_schema:
-            warnings.append(
-                "Schema stage is deprecated for Azure correctness; prefer preview+vscode."
-            )
+            warnings.append("Schema stage is deprecated for Azure correctness; prefer preview+lsp.")
         if (
             options.gate_mode == GateMode.AUTHORITATIVE
             and not options.include_preview
-            and not options.include_vscode
+            and not options.include_lsp
         ):
             warnings.append(
-                "Gate mode 'authoritative' requires preview or vscode; "
+                "Gate mode 'authoritative' requires preview or lsp; "
                 "falling back to 'all' for blocking behavior."
             )
         return warnings
@@ -181,18 +179,18 @@ class ValidationService:
             )
         return tuple(findings), response.final_yaml, False
 
-    def _run_vscode(
+    def _run_lsp(
         self, document: YamlDocument, options: ValidationOptions
-    ) -> tuple[tuple[VscodeFinding, ...], bool]:
-        if not options.include_vscode or self._vscode_validator is None:
+    ) -> tuple[tuple[LspFinding, ...], bool]:
+        if not options.include_lsp or self._lsp_validator is None:
             return tuple(), False
         try:
-            findings = self._vscode_validator.run([document]).get(document.path, tuple())
+            findings = self._lsp_validator.run([document]).get(document.path, tuple())
             return findings, False
-        except VscodeValidationError as error:
+        except LspValidationError as error:
             if options.fail_fast:
                 raise
-            finding = VscodeFinding(
+            finding = LspFinding(
                 path=document.path,
                 line=1,
                 column=1,

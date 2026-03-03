@@ -59,7 +59,7 @@ class Reporter:
         table.add_column("yamllint")
         table.add_column("schema")
         table.add_column("preview")
-        table.add_column("vscode")
+        table.add_column("lsp")
 
         for result in summary.results:
             table.add_row(
@@ -77,8 +77,8 @@ class Reporter:
                     status=result.stage_status(StageName.PREVIEW, enabled=summary.include_preview),
                 ),
                 _column_text(
-                    result.vscode,
-                    status=result.stage_status(StageName.VSCODE, enabled=summary.include_vscode),
+                    result.lsp,
+                    status=result.stage_status(StageName.LSP, enabled=summary.include_lsp),
                 ),
             )
 
@@ -121,11 +121,9 @@ class Reporter:
                                 StageName.PREVIEW, enabled=summary.include_preview
                             ),
                         ),
-                        "vscode": _stage_payload(
-                            result.vscode,
-                            status=result.stage_status(
-                                StageName.VSCODE, enabled=summary.include_vscode
-                            ),
+                        "lsp": _stage_payload(
+                            result.lsp,
+                            status=result.stage_status(StageName.LSP, enabled=summary.include_lsp),
                         ),
                     },
                     "final_yaml": result.final_yaml,

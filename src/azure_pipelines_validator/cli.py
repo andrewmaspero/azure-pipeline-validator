@@ -12,17 +12,17 @@ from rich.console import Console
 from .azure_devops import AzureDevOpsClient
 from .exceptions import (
     AzureDevOpsError,
+    LspValidationError,
     SchemaUnavailableError,
     SettingsError,
-    VscodeValidationError,
 )
 from .file_scanner import FileScanner
+from .lsp_engine import LspValidator
 from .models import GateMode, ValidationOptions
 from .reporter import Reporter
 from .schema_engine import SchemaValidator
 from .service import ValidationService
 from .settings import Settings
-from .vscode_engine import VscodeValidator
 from .yaml_processing import DocumentLoader, TemplateWrapper
 from .yamllint_engine import YamllintRunner
 
@@ -33,7 +33,7 @@ app = typer.Typer(
     suggest_commands=True,
     help=(
         "Validate Azure Pipelines YAML with authoritative Azure signals by default "
-        "(preview REST API + VS Code language server), plus optional advisory "
+        "(preview REST API + Azure LSP language server), plus optional advisory "
         "yamllint/schema checks."
     ),
 )
@@ -132,36 +132,36 @@ AzureTimeoutOption = Annotated[
     ),
 ]
 
-VscodeServerPathOption = Annotated[
+LspServerPathOption = Annotated[
     Path | None,
     typer.Option(
-        "--vscode-server-path",
+        "--lsp-server-path",
         metavar="PATH",
         show_default=False,
-        rich_help_panel="VS Code integration",
-        help="Path to Azure Pipelines extension language server (dist/server.js).",
+        rich_help_panel="Azure LSP integration",
+        help="Path to Azure DevOps pipeline language server entrypoint (dist/server.js).",
     ),
 ]
 
-VscodeSchemaPathOption = Annotated[
+LspSchemaPathOption = Annotated[
     Path | None,
     typer.Option(
-        "--vscode-schema-path",
+        "--lsp-schema-path",
         metavar="PATH",
         show_default=False,
-        rich_help_panel="VS Code integration",
-        help="Path to Azure Pipelines extension service-schema.json.",
+        rich_help_panel="Azure LSP integration",
+        help="Path to Azure DevOps pipeline language server schema (service-schema.json).",
     ),
 ]
 
-VscodeTimeoutOption = Annotated[
+LspTimeoutOption = Annotated[
     float,
     typer.Option(
-        "--vscode-timeout-seconds",
+        "--lsp-timeout-seconds",
         metavar="SECONDS",
         show_default=True,
-        rich_help_panel="VS Code integration",
-        help="Diagnostics wait timeout per file for VS Code language server.",
+        rich_help_panel="Azure LSP integration",
+        help="Diagnostics wait timeout per file for Azure LSP language server.",
     ),
 ]
 
@@ -185,7 +185,7 @@ GateModeOption = Annotated[
         rich_help_panel="Output",
         help=(
             "Blocking policy for exit code. "
-            "'authoritative' blocks only on preview + vscode failures; "
+            "'authoritative' blocks only on preview + lsp failures; "
             "'all' blocks on every enabled stage."
         ),
     ),
@@ -210,7 +210,7 @@ HiddenModeOption = Annotated[
 
 @app.command(
     help=(
-        "Run authoritative Azure validation by default (preview + vscode). "
+        "Run authoritative Azure validation by default (preview + lsp). "
         "Optional advisory stages (yamllint/schema) can be enabled explicitly."
     )
 )
@@ -223,9 +223,9 @@ def validate(
     azdo_pat: AzurePatOption = None,
     azdo_ref_name: AzureRefOption = None,
     azdo_timeout_seconds: AzureTimeoutOption = None,
-    vscode_server_path: VscodeServerPathOption = None,
-    vscode_schema_path: VscodeSchemaPathOption = None,
-    vscode_timeout_seconds: VscodeTimeoutOption = 5.0,
+    lsp_server_path: LspServerPathOption = None,
+    lsp_schema_path: LspSchemaPathOption = None,
+    lsp_timeout_seconds: LspTimeoutOption = 5.0,
     output_format: OutputFormatOption = "text",
     gate_mode: GateModeOption = "authoritative",
     hidden_mode: HiddenModeOption = "common",
@@ -244,7 +244,7 @@ def validate(
             rich_help_panel="Validation toggles",
             help=(
                 "Enable or disable deprecated advisory schema checks. "
-                "Prefer preview+vscode for Azure correctness."
+                "Prefer preview+lsp for Azure correctness."
             ),
         ),
     ] = False,
@@ -256,14 +256,14 @@ def validate(
             help="Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.",
         ),
     ] = True,
-    run_vscode: Annotated[
+    run_lsp: Annotated[
         bool,
         typer.Option(
-            "--run-vscode / --skip-vscode",
+            "--run-lsp / --skip-lsp",
             rich_help_panel="Validation toggles",
             help=(
-                "Validate using the same Azure Pipelines VS Code extension language server "
-                "(auto-detected from local extension install by default)."
+                "Validate using the Azure DevOps pipeline language server (LSP), "
+                "auto-detected from local editor extension installs by default."
             ),
         ),
     ] = True,
@@ -287,16 +287,16 @@ def validate(
         azdo_pat: Optional PAT or OAuth token override.
         azdo_ref_name: Optional git ref used for template expansion.
         azdo_timeout_seconds: Optional timeout override for Azure DevOps requests.
-        vscode_server_path: Optional path to the language-server binary.
-        vscode_schema_path: Optional path to the language-server schema file.
-        vscode_timeout_seconds: Diagnostic timeout used by VS Code validation.
+        lsp_server_path: Optional path to the language-server binary.
+        lsp_schema_path: Optional path to the language-server schema file.
+        lsp_timeout_seconds: Diagnostic timeout used by Azure LSP validation.
         output_format: Reporter output format.
         gate_mode: Gate mode used to determine blocking behavior.
         hidden_mode: Hidden directory discovery mode.
         run_yamllint: Enable advisory yamllint checks.
         run_schema: Enable advisory schema checks.
         run_preview: Enable preview validation against Azure DevOps.
-        run_vscode: Enable VS Code language-server validation.
+        run_lsp: Enable Azure LSP language-server validation.
         fail_fast: Stop at the first failing file.
 
     Raises:
@@ -333,17 +333,17 @@ def validate(
     wrapper = TemplateWrapper(repo_root=effective_repo_root)
     yamllint_runner = YamllintRunner() if run_yamllint else None
     try:
-        vscode_validator = (
-            VscodeValidator(
+        lsp_validator = (
+            LspValidator(
                 repo_root=effective_repo_root,
-                server_path=vscode_server_path,
-                schema_path=vscode_schema_path,
-                timeout_seconds=vscode_timeout_seconds,
+                server_path=lsp_server_path,
+                schema_path=lsp_schema_path,
+                timeout_seconds=lsp_timeout_seconds,
             )
-            if run_vscode
+            if run_lsp
             else None
         )
-    except VscodeValidationError as error:
+    except LspValidationError as error:
         console.print(f"[bold red]{error}")
         raise typer.Exit(code=2) from error
 
@@ -360,19 +360,19 @@ def validate(
             wrapper=wrapper,
             yamllint_runner=yamllint_runner,
             schema_validator=schema_validator,
-            vscode_validator=vscode_validator,
+            lsp_validator=lsp_validator,
         )
         options = ValidationOptions(
             include_lint=run_yamllint,
             include_schema=run_schema,
             include_preview=run_preview,
-            include_vscode=run_vscode,
+            include_lsp=run_lsp,
             gate_mode=GateMode(gate_mode),
             fail_fast=fail_fast,
         )
         try:
             summary = service.validate(target=target, options=options)
-        except (AzureDevOpsError, SchemaUnavailableError, VscodeValidationError) as error:
+        except (AzureDevOpsError, SchemaUnavailableError, LspValidationError) as error:
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=1) from error
 

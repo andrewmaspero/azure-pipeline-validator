@@ -119,7 +119,7 @@ class StageName(StrEnum):
     YAMLLINT = "yamllint"
     SCHEMA = "schema"
     PREVIEW = "preview"
-    VSCODE = "vscode"
+    LSP = "lsp"
 
 
 class StageStatus(StrEnum):
@@ -176,8 +176,8 @@ class PreviewFinding:
 
 
 @dataclass(slots=True)
-class VscodeFinding:
-    """Finding returned by the VS Code language server."""
+class LspFinding:
+    """Finding returned by the Azure LSP language server."""
 
     path: Path
     line: int
@@ -195,12 +195,12 @@ class FileValidationResult:
     yamllint: Sequence[YamllintFinding]
     schema: Sequence[SchemaFinding]
     preview: Sequence[PreviewFinding]
-    vscode: Sequence[VscodeFinding]
+    lsp: Sequence[LspFinding]
     final_yaml: str | None
     yamllint_error: bool = False
     schema_error: bool = False
     preview_error: bool = False
-    vscode_error: bool = False
+    lsp_error: bool = False
 
     @property
     def is_successful(self) -> bool:
@@ -210,11 +210,11 @@ class FileValidationResult:
                 self.yamllint,
                 self.schema,
                 self.preview,
-                self.vscode,
+                self.lsp,
                 self.yamllint_error,
                 self.schema_error,
                 self.preview_error,
-                self.vscode_error,
+                self.lsp_error,
             )
         )
 
@@ -234,13 +234,13 @@ class FileValidationResult:
             StageName.YAMLLINT: self.yamllint,
             StageName.SCHEMA: self.schema,
             StageName.PREVIEW: self.preview,
-            StageName.VSCODE: self.vscode,
+            StageName.LSP: self.lsp,
         }[stage]
         errored = {
             StageName.YAMLLINT: self.yamllint_error,
             StageName.SCHEMA: self.schema_error,
             StageName.PREVIEW: self.preview_error,
-            StageName.VSCODE: self.vscode_error,
+            StageName.LSP: self.lsp_error,
         }[stage]
         if errored:
             return StageStatus.ERROR
@@ -257,7 +257,7 @@ class ValidationSummary:
     include_lint: bool = True
     include_schema: bool = True
     include_preview: bool = True
-    include_vscode: bool = True
+    include_lsp: bool = True
     gate_mode: GateMode = GateMode.ALL
     fail_fast: bool = False
     stopped_early: bool = False
@@ -292,7 +292,7 @@ class ValidationSummary:
     def effective_gate_mode(self) -> GateMode:
         """Return gate mode after applying fallback logic."""
         if self.gate_mode == GateMode.AUTHORITATIVE and not (
-            self.include_preview or self.include_vscode
+            self.include_preview or self.include_lsp
         ):
             return GateMode.ALL
         return self.gate_mode
@@ -302,9 +302,9 @@ class ValidationSummary:
             return not result.is_successful
 
         preview_status = result.stage_status(StageName.PREVIEW, enabled=self.include_preview)
-        vscode_status = result.stage_status(StageName.VSCODE, enabled=self.include_vscode)
+        lsp_status = result.stage_status(StageName.LSP, enabled=self.include_lsp)
         blocking_statuses = {StageStatus.FAILED, StageStatus.ERROR}
-        return (preview_status in blocking_statuses) or (vscode_status in blocking_statuses)
+        return (preview_status in blocking_statuses) or (lsp_status in blocking_statuses)
 
 
 @dataclass(slots=True)
@@ -314,6 +314,6 @@ class ValidationOptions:
     include_lint: bool = False
     include_schema: bool = False
     include_preview: bool = True
-    include_vscode: bool = True
+    include_lsp: bool = True
     gate_mode: GateMode = GateMode.AUTHORITATIVE
     fail_fast: bool = False

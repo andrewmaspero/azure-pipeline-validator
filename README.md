@@ -1,143 +1,103 @@
-# Azure Pipeline Validator
+# ![Azure Pipeline Validator](https://img.shields.io/static/v1?label=&message=Azure%20Pipeline%20Validator&color=1D4ED8&style=for-the-badge&logo=azuredevops&logoColor=white)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?logo=open-source-initiative&logoColor=white)](LICENSE)
-[![Python Version](https://img.shields.io/badge/Python-3.13+-3776AB?logo=python&logoColor=white)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/Tests-pytest-0A9EDC?logo=pytest&logoColor=white)](https://docs.pytest.org/)
-[![Lint](https://img.shields.io/badge/Lint-Ruff-000000?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](./.github/workflows/ci.yml)
+Local-first Azure DevOps YAML validation with Azure-authoritative checks by default.
 
-`azure-pipeline-validator` is a batteries‑included Azure DevOps YAML inspector that runs the same validations you rely on in the service, but locally.
+<div align="left">
+  <table>
+    <tr>
+      <td><strong>Lifecycle</strong></td>
+      <td>
+        <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-1F4B99?style=flat&logo=githubactions&logoColor=white" alt="CI/CD" /></a>
+        <a href="https://github.com/andrewmaspero/azure-pipeline-validator/releases"><img src="https://img.shields.io/github/v/release/andrewmaspero/azure-pipeline-validator?label=Release&style=flat&logo=github&logoColor=white" alt="Release" /></a>
+        <a href="https://pypi.org/project/azure-pipeline-validator/"><img src="https://img.shields.io/pypi/v/azure-pipeline-validator?label=PyPI&style=flat&logo=pypi&logoColor=white" alt="PyPI" /></a>
+        <a href="https://github.com/andrewmaspero/azure-pipeline-validator/pkgs/container/azure-pipeline-validator-dist"><img src="https://img.shields.io/badge/Packages-GHCR-0F172A?style=flat&logo=github&logoColor=white" alt="Packages" /></a>
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Core Stack</strong></td>
+      <td>
+        <img src="https://img.shields.io/badge/Python-3.13-3776AB?style=flat&logo=python&logoColor=white" alt="Python" />
+        <img src="https://img.shields.io/badge/CLI-Typer-0EA5E9?style=flat&logo=python&logoColor=white" alt="Typer" />
+        <img src="https://img.shields.io/badge/Lint-Ruff-000000?style=flat&logo=ruff&logoColor=white" alt="Ruff" />
+        <img src="https://img.shields.io/badge/Test-Pytest-0A9EDC?style=flat&logo=pytest&logoColor=white" alt="Pytest" />
+        <img src="https://img.shields.io/badge/PM-uv-DE5FE9?style=flat&logo=astral&logoColor=white" alt="uv" />
+        <img src="https://img.shields.io/badge/Validation-Azure%20Preview-2563EB?style=flat&logo=azuredevops&logoColor=white" alt="Azure preview" />
+        <img src="https://img.shields.io/badge/Validation-VS%20Code%20LSP-007ACC?style=flat&logo=visualstudiocode&logoColor=white" alt="VS Code" />
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Navigation</strong></td>
+      <td>
+        <a href="#quick-start"><img src="https://img.shields.io/badge/Local%20Setup-Quick%20Start-059669?style=flat&logo=serverless&logoColor=white" alt="Quick Start" /></a>
+        <a href="#features"><img src="https://img.shields.io/badge/Overview-Features-7C3AED?style=flat&logo=simpleicons&logoColor=white" alt="Features" /></a>
+        <a href="#configuration"><img src="https://img.shields.io/badge/Config-Environment-0EA5E9?style=flat&logo=dotenv&logoColor=white" alt="Configuration" /></a>
+        <a href="#cli-reference"><img src="https://img.shields.io/badge/CLI-Reference-0284C7?style=flat&logo=gnubash&logoColor=white" alt="CLI" /></a>
+        <a href="#ci-cd"><img src="https://img.shields.io/badge/Deploy-CI%2FCD-1F4B99?style=flat&logo=githubactions&logoColor=white" alt="CI/CD" /></a>
+        <a href="#architecture"><img src="https://img.shields.io/badge/Design-Architecture-1F2937?style=flat&logo=planetscale&logoColor=white" alt="Architecture" /></a>
+        <a href="#operations"><img src="https://img.shields.io/badge/Health-Operations-0F172A?style=flat&logo=serverfault&logoColor=white" alt="Operations" /></a>
+      </td>
+    </tr>
+  </table>
+</div>
 
-It is **authoritative-first by default**:
-1. **Preview REST API** – invokes `POST .../_apis/pipelines/{id}/preview` with `yamlOverride`, returning real `finalYaml` + `validationResults`.
-2. **VS Code extension language server** – runs the Azure Pipelines language server (`ms-azure-devops.azure-pipelines`) so diagnostics align with editor behavior.
+<a id="quick-start"></a>
+## ![Quick Start](https://img.shields.io/badge/Quick%20Start-4%20steps-059669?style=for-the-badge&logo=serverless&logoColor=white)
 
-Optional advisory checks are still available:
-3. **yamllint** – fast structural/style linting.
-4. **JSON Schema** – generic schema check (soft-deprecated for Azure correctness decisions).
+1. Install `uv` if needed: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+2. Clone and enter the repo: `git clone https://github.com/andrewmaspero/azure-pipeline-validator.git && cd azure-pipeline-validator`
+3. Install dependencies: `uv sync --dev`
+4. Run the CLI: `uv run azure-pipeline-validator --help`
 
-The CLI understands both single files and whole repositories, wraps templates automatically (steps/jobs/stages), and mirrors the live API response schema (including `continuation_token`).
-
-## Table of contents
-
-- [Azure Pipeline Validator](#azure-pipeline-validator)
-  - [Table of contents](#table-of-contents)
-  - [Features](#features)
-  - [Installation \& invocation](#installation--invocation)
-  - [Required environment](#required-environment)
-  - [Usage examples](#usage-examples)
-  - [CLI reference](#cli-reference)
-  - [Output format](#output-format)
-  - [CI integration](#ci-integration)
-  - [Development workflow](#development-workflow)
-  - [Publishing the package](#publishing-the-package)
-  - [Troubleshooting](#troubleshooting)
-  - [License](#license)
-
-## Features
-
-- **Template auto-wrapping** – detects steps/jobs/stages templates, wrapping them into runnable pipelines before previewing.
-- **Authoritative-first defaults** – defaults to preview + vscode for correctness gating.
-- **Schema soft-deprecation** – schema check remains available but is flagged as advisory/deprecated for correctness.
-- **Rich reporting** – console output shows passed/failed/skipped/error per file with the first offending message per stage.
-- **Machine-readable output** – emit `json` (single payload) or `ndjson` (file records + summary) for CI ingestion.
-- **VS Code parity checks** – catches extension-level diagnostics (template-expression aware) that generic YAML tooling can miss.
-- **Toggleable stages** – enable/disable advisory and authoritative stages explicitly.
-- **Blocking policy controls** – `--gate-mode authoritative|all` plus explicit blocking/advisory counts.
-- **UV-native** – built with [uv](https://docs.astral.sh/uv/), so you can run it via `uv run`, `uvx`, or install it as a global tool.
-
-## Installation & invocation
-
-Local development (inside this repo):
-
-```bash
-cd /path/to/azure-pipeline-validator
-uv run azure-pipeline-validator --help
-```
-
-Published usage via `uvx` (no clone required):
+Package usage without cloning:
 
 ```bash
 uvx azure-pipeline-validator --help
 ```
 
-Global install with uv (install once, use anywhere):
+<a id="features"></a>
+## ![Features](https://img.shields.io/badge/Features-Authoritative%20first-7C3AED?style=for-the-badge&logo=simpleicons&logoColor=white)
 
-```bash
-uv tool install git+https://github.com/andrewmaspero/azure-pipeline-validator.git
-azure-pipeline-validator --help
-```
-
-Once published to PyPI, you can also use:
-```bash
-uv tool install azure-pipeline-validator
-azure-pipeline-validator --help
-```
-
-Pip install will also work once published (`pip install azure-pipeline-validator`).
-
-## Required environment
-
-Environment variables (or their CLI equivalents) are required for default authoritative validation (`preview` is on by default). Pure local lint-only runs (`--skip-preview --skip-vscode --run-yamllint`) do not need Azure credentials.
-
-Export the same variables you would in an Azure Pipelines job, or pass them via the `--azdo-*` options:
-
-| Variable | Description |
+| Feature Badge | Details |
 | --- | --- |
-| `AZDO_ORG` / `--azdo-org` | Organization URL, e.g. `https://dev.azure.com/contoso`. |
-| `AZDO_PROJECT` / `--azdo-project` | Project that owns the pipeline. |
-| `AZDO_PIPELINE_ID` / `--azdo-pipeline-id` | ID of an existing YAML pipeline (any pipeline is fine). |
-| `AZDO_PAT` / `--azdo-pat` | PAT with Build (Read & Execute); use `SYSTEM_ACCESSTOKEN` inside CI. |
-| `AZDO_REFNAME` | Optional ref used when expanding templates (default `refs/heads/main`). |
-| `AZDO_TIMEOUT_SECONDS` | Optional HTTP timeout override (default 30). |
+| ![Preview](https://img.shields.io/badge/Azure%20Preview-Authoritative-2563EB?style=flat&logo=azuredevops&logoColor=white) | Calls Azure DevOps pipeline preview API and returns real `validationResults` and `finalYaml`. |
+| ![VSCode](https://img.shields.io/badge/VS%20Code-Language%20Server-007ACC?style=flat&logo=visualstudiocode&logoColor=white) | Runs the Azure Pipelines extension language server for diagnostics aligned with editor behavior. |
+| ![Gate](https://img.shields.io/badge/Gate%20Mode-authoritative%7Call-1F2937?style=flat&logo=simpleicons&logoColor=white) | Default gate mode is `authoritative`; optional strict mode is `all`. |
+| ![Yamllint](https://img.shields.io/badge/yamllint-Advisory-0EA5E9?style=flat&logo=yaml&logoColor=white) | Optional style and structure checks, disabled by default. |
+| ![Schema](https://img.shields.io/badge/Schema-Deprecated%20Advisory-F59E0B?style=flat&logo=json&logoColor=white) | Generic schema checks remain available via `--run-schema` with deprecation warning. |
+| ![Output](https://img.shields.io/badge/Output-text%20%7C%20json%20%7C%20ndjson-334155?style=flat&logo=files&logoColor=white) | Rich text output plus machine-readable formats for CI consumers. |
+| ![Templates](https://img.shields.io/badge/Templates-Auto%20wrap-10B981?style=flat&logo=azuredevops&logoColor=white) | Detects template shape and wraps steps/jobs/stages when needed. |
 
-> **Tip:** Inside Azure Pipelines you can skip `AZDO_PAT` by enabling “Allow scripts to access the OAuth token” and mapping it to `SYSTEM_ACCESSTOKEN`.
+<a id="configuration"></a>
+## ![Configuration](https://img.shields.io/badge/Configuration-Environment-0EA5E9?style=for-the-badge&logo=dotenv&logoColor=white)
 
-## Usage examples
+### ![Azure Env](https://img.shields.io/badge/Azure%20DevOps-required%20for%20preview-2563EB?style=for-the-badge&logo=azuredevops&logoColor=white)
 
-Run the authoritative default (recommended):
+| Name | Required | Default | Format | Description |
+| --- | --- | --- | --- | --- |
+| `AZDO_ORG` | yes (preview) | - | URL | Azure DevOps org URL, for example `https://dev.azure.com/contoso`. |
+| `AZDO_PROJECT` | yes (preview) | - | string | Project name that owns the pipeline definition. |
+| `AZDO_PIPELINE_ID` | yes (preview) | - | integer | Existing pipeline ID used for preview expansion. |
+| `AZDO_PAT` | yes (preview, unless CI token) | - | string | PAT with Build Read and Execute permissions, or `SYSTEM_ACCESSTOKEN` in CI. |
+| `AZDO_REFNAME` | no | `refs/heads/main` | string | Git ref used while expanding templates during preview. |
+| `AZDO_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for Azure preview API calls. |
 
-```bash
-uv run azure-pipeline-validator validate . \
-  --repo-root $(pwd)
-```
+### ![VS Code Assets](https://img.shields.io/badge/VS%20Code-assets%20and%20cache-007ACC?style=for-the-badge&logo=visualstudiocode&logoColor=white)
 
-Run strict all-stage gating (legacy-like strictness):
+| Name | Required | Default | Format | Description |
+| --- | --- | --- | --- | --- |
+| `AZP_VALIDATOR_VSCODE_OFFLINE` | no | `false` | boolean | Forces cache-only VS Code asset usage. |
+| `AZP_VALIDATOR_VSCODE_CACHE_DIR` | no | `~/.azure-pipeline-validator/vscode-assets` | path | Cache directory for extension artifacts. |
+| `AZP_VALIDATOR_VSCODE_VERSION` | no | `latest` | string | Pins downloaded Azure Pipelines extension version. |
+| `AZP_VALIDATOR_VSCODE_SHA256` | no | - | hex | Optional checksum verification for extension download. |
+| `AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for extension download operations. |
 
-```bash
-uv run azure-pipeline-validator validate . \
-  --repo-root $(pwd) \
-  --run-yamllint --run-schema \
-  --gate-mode all
-```
+Notes:
+- Default behavior runs `preview` and `vscode`; these require Azure credentials and Node runtime availability.
+- `yamllint` and `schema` are advisory by default and disabled until explicitly enabled.
+- If both authoritative stages are disabled while `--gate-mode authoritative` is requested, gating falls back to `all` with a warning.
 
-Run authoritative-only checks explicitly:
-
-```bash
-uv run azure-pipeline-validator validate workflows/ \
-  --skip-yamllint --skip-schema \
-  --gate-mode authoritative
-```
-
-Validate with explicit VS Code extension artifacts:
-
-```bash
-uv run azure-pipeline-validator validate . \
-  --run-vscode \
-  --vscode-server-path ~/.cursor/extensions/ms-azure-devops.azure-pipelines-1.261.1/dist/server.js \
-  --vscode-schema-path ~/.cursor/extensions/ms-azure-devops.azure-pipelines-1.261.1/service-schema.json
-```
-
-Self-contained VS Code mode (no local extension install required):
-- If no local Azure Pipelines extension is found and no explicit `--vscode-*` paths are provided, the validator auto-downloads the extension VSIX and caches `dist/server.js` + `service-schema.json`.
-- Optional environment controls:
-  - `AZP_VALIDATOR_VSCODE_OFFLINE=true` forces cache-only behavior.
-  - `AZP_VALIDATOR_VSCODE_CACHE_DIR=/path/to/cache` sets the cache directory (default: `~/.azure-pipeline-validator/vscode-assets`).
-  - `AZP_VALIDATOR_VSCODE_VERSION=latest` pins extension version (defaults to `latest`).
-  - `AZP_VALIDATOR_VSCODE_SHA256=<hex>` enforces archive checksum verification.
-  - `AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS=30` sets download timeout.
-
-## CLI reference
+<a id="cli-reference"></a>
+## ![CLI](https://img.shields.io/badge/CLI-Reference-0284C7?style=for-the-badge&logo=gnubash&logoColor=white)
 
 ```text
 Usage: azure-pipeline-validator [OPTIONS] [PATH]
@@ -162,202 +122,109 @@ Options:
   --help                               Show this message and exit.
 ```
 
-## Output format
+<a id="output-format"></a>
+## ![Output](https://img.shields.io/badge/Output-Formats-334155?style=for-the-badge&logo=files&logoColor=white)
 
-`--output-format text` (default): every file gets one row with four columns (yamllint / schema / preview / vscode). A passing stage prints `pass`; skipped stages print `skip`; failing/error stages show the first message (plus a “(+N more)” suffix when applicable). Example:
+- `text` (default): rounded table with per-stage status (`pass`, `skip`, `error`, or first finding).
+- `json`: one stable payload containing `schema_version`, `summary`, and `files`.
+- `ndjson`: one record per file plus one summary record.
+
+Example text output:
 
 ```text
 ╭──────────────────────┬──────────┬────────┬──────────────────────┬──────────────────────╮
 │ File                 │ yamllint │ schema │ preview              │ vscode               │
 ├──────────────────────┼──────────┼────────┼──────────────────────┼──────────────────────┤
-│ workflows/ci.yml     │ pass     │ pass   │ pass                 │ pass                 │
-│ workflows/deploy.yml │ pass     │ pass   │ pass                 │ L12 C9: pattern ...  │
+│ workflows/ci.yml     │ pass     │ skip   │ pass                 │ pass                 │
+│ workflows/deploy.yml │ skip     │ skip   │ pass                 │ L12 C9: pattern ...  │
 ╰──────────────────────┴──────────┴────────┴──────────────────────┴──────────────────────╯
 Validated 2 file(s). Blocking failures: 1. Advisory-only files: 0. Gate mode: authoritative.
 ```
 
-`--output-format json`: emits one stable JSON object with `schema_version`, `summary`, and `files`.
+<a id="ci-cd"></a>
+## ![CI/CD](https://img.shields.io/badge/CI%2FCD-Release%20Automation-1F4B99?style=for-the-badge&logo=githubactions&logoColor=white)
 
-`--output-format ndjson`: emits one JSON object per line (`type=file` records followed by a final `type=summary` record).
+This repo uses three GitHub workflows:
 
-Summary metadata includes `fail_fast`, `stopped_early`, and `discovered_files`.
-Summary metadata also includes `warnings` for deprecations/fallbacks.
+1. [CI](.github/workflows/ci.yml)
+   - PR semantic-title enforcement.
+   - Ruff, format check, pytest, and coverage gate (`>=90%`).
+2. [Release Please](.github/workflows/release-please.yml)
+   - Conventional commits drive semantic versioning.
+   - Updates `pyproject.toml` version, creates tag, and creates GitHub Release.
+3. [Publish](.github/workflows/publish.yml)
+   - Publishes to PyPI via Trusted Publishing.
+   - Publishes OCI dist artifact to GHCR for Packages visibility.
 
-Exit code behavior follows the active gate mode and still returns non-zero for runtime errors (for example preview/schema/vscode engine failures).
+### ![PyPI Setup](https://img.shields.io/badge/PyPI-Trusted%20Publishing-0EA5E9?style=for-the-badge&logo=pypi&logoColor=white)
 
-Blocking behavior is controlled by `--gate-mode`:
+| Setting | Value |
+| --- | --- |
+| PyPI project name | `azure-pipeline-validator` |
+| GitHub owner | `andrewmaspero` |
+| GitHub repository | `azure-pipeline-validator` |
+| Workflow file | `publish.yml` |
+| Environment name | `pypi` |
 
-- `authoritative` (default): only Azure-authoritative stages (`preview`, `vscode`) fail the command.
-- `all`: any enabled stage (`yamllint`, `schema`, `preview`, `vscode`) can fail the command.
-
-Schema stage is **soft-deprecated** for Azure correctness decisions and emits a warning when enabled.
-
-Migration note:
-- If your CI previously relied on schema/yamllint failures as blockers, switch to:
-  `--run-yamllint --run-schema --gate-mode all`
-
-## Authoritative-First Defaults
-
-Default behavior:
-- `preview`: on
-- `vscode`: on
-- `yamllint`: off (opt-in advisory)
-- `schema`: off (opt-in, deprecated advisory)
-- gate mode: `authoritative`
-
-## Source Of Truth (Azure Pipelines vs Red Hat YAML)
-
-If you see a large error count in VS Code (for example dozens of errors) but only one Azure Pipelines error, you are usually seeing two validators at once:
-
-- Azure Pipelines extension (`ms-azure-devops.azure-pipelines`)
-- Red Hat YAML extension (`redhat.vscode-yaml`) using `yaml.schemas`
-
-For Azure DevOps pipeline/template syntax, the practical source-of-truth order is:
-
-1. Azure DevOps service preview API (`--run-preview`)
-2. Azure Pipelines VS Code language server (`--run-vscode`)
-3. Generic schema/yamllint checks (`--run-schema`, `--run-yamllint`) as supplemental signals
-
-Why counts differ:
-- The Red Hat YAML extension performs generic YAML+JSON-Schema validation and does not fully emulate Azure template-expression semantics.
-- Azure Pipelines language server understands Azure-specific constructs and usually reports the actionable pipeline error set.
-
-Recommended VS Code setup:
-- Do not pin Azure Pipelines files to Microsoft schema via Red Hat `yaml.schemas` when the Azure Pipelines extension is enabled.
-- Keep Red Hat YAML for non-pipeline YAML files.
-- Treat Azure Pipelines diagnostics (plus service preview) as authoritative for pipeline correctness.
-
-## CI integration
-
-Add a job that installs uv, exports `AZDO_*`, and runs the command. When running inside Azure Pipelines you can reuse `$(System.AccessToken)` and the current pipeline id:
-
-```yaml
-- job: Validate
-  pool:
-    vmImage: ubuntu-latest
-  steps:
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: '3.12'
-
-    - script: |
-        uv tool install azure-pipeline-validator
-        azure-pipeline-validator workflows/
-      env:
-        AZDO_ORG: $(System.TeamFoundationCollectionUri)
-        AZDO_PROJECT: $(System.TeamProject)
-        AZDO_PIPELINE_ID: $(System.DefinitionId)
-        AZDO_PAT: $(System.AccessToken)
-        AZDO_REFNAME: $(Build.SourceBranch)
-```
-
-The preview call runs with `yamlOverride`, so no build is queued.
-
-## Development workflow
+<a id="developer-workflow"></a>
+## ![Developer Workflow](https://img.shields.io/badge/Developer-Workflow-6366F1?style=for-the-badge&logo=git&logoColor=white)
 
 ```bash
-# Format and lint
-uv run ruff format --check
-uv run ruff format
-uv run ruff check
+# Install dependencies
+uv sync --dev
 
-# Run the test suite
+# Lint and format checks
+uv run ruff check
+uv run ruff format --check
+
+# Test suite
 uv run python -m pytest
 
-# Run coverage gate (recommended before release)
+# Coverage gate
 uv run python -m pytest --cov=src/azure_pipelines_validator --cov-report=term-missing --cov-fail-under=90
 
-# Enforce Google-style docstrings
-uvx --from pydocstyle pydocstyle --convention=google src tests
+# Google docstring style checks
+uvx --from pydocstyle pydocstyle --convention=google src
 ```
 
-`pyproject.toml` configures Ruff (line length 100, py313) and pytest/coverage. The tests include CLI help verification plus mock preview responses that mirror the real API payload captured from Azure DevOps.
+<a id="operations"></a>
+## ![Operations](https://img.shields.io/badge/Operations-Runbook-10B981?style=for-the-badge&logo=serverfault&logoColor=white)
 
-## Publishing the package
+- Validate a repo quickly: `uv run azure-pipeline-validator validate . --repo-root $(pwd)`
+- Authoritative-only gate (default): preview and vscode determine exit code.
+- Strict all-stage gate: `--run-yamllint --run-schema --gate-mode all`
+- Fail fast for CI cost control: add `--fail-fast`.
+- Treat schema warnings as advisory; schema stage is soft-deprecated for Azure correctness.
 
-Publishing is fully automated with GitHub Actions:
+<a id="architecture"></a>
+## ![Architecture](https://img.shields.io/badge/Architecture-Stack%20Map-1F2937?style=for-the-badge&logo=planetscale&logoColor=white)
 
-1. `CI` workflow (`.github/workflows/ci.yml`)
-   - Validates Conventional Commit-compatible PR titles (blocking check).
-   - Runs lint, format check, tests, and coverage gate.
-2. `Release Please` workflow (`.github/workflows/release-please.yml`)
-   - Creates/updates a release PR from conventional commits.
-   - On merge, bumps semantic version in `pyproject.toml`, creates a tag, and creates a GitHub Release.
-3. `Publish` workflow (`.github/workflows/publish.yml`)
-   - On `release.published`, publishes to PyPI via Trusted Publishing (OIDC).
-   - Publishes an OCI artifact to GHCR so the repository **Packages** section is populated.
+- CLI and orchestration: Typer-based command surface and validation service pipeline.
+- Azure-authoritative engines:
+  - Azure DevOps Preview API (`yamlOverride` against existing pipeline definition).
+  - Azure Pipelines VS Code language server diagnostics.
+- Advisory engines:
+  - `yamllint` for style and structure.
+  - JSON schema checks for generic coverage.
+- Output and gating model:
+  - Stage-level statuses: `passed`, `failed`, `error`, `skipped`.
+  - Gate modes: `authoritative` and `all`.
+  - Reporter supports text, JSON, and NDJSON for CI ingestion.
 
-### First-time setup (required)
+<a id="troubleshooting"></a>
+## ![Troubleshooting](https://img.shields.io/badge/Troubleshooting-Playbook-F59E0B?style=for-the-badge&logo=googledocs&logoColor=white)
 
-1. **Create project on PyPI**
-   - Go to https://pypi.org/manage/projects/
-   - Create project `azure-pipeline-validator` (must match `name` in `pyproject.toml`).
+- Symptom: many Red Hat YAML warnings but one Azure error.
+  - Cause: generic YAML schema validation and Azure template semantics diverge.
+  - Action: rely on `preview` and `vscode` as source of truth for Azure correctness.
+- Symptom: VS Code validator cannot start.
+  - Cause: missing Node binary or unavailable extension assets.
+  - Action: ensure Node is installed and pass `--vscode-server-path` and `--vscode-schema-path` if needed.
+- Symptom: preview failures in CI.
+  - Cause: missing Azure credentials or insufficient PAT scope.
+  - Action: ensure `AZDO_*` values are present and token has Build Read and Execute permissions.
 
-2. **Configure PyPI Trusted Publisher**
-   - Go to https://pypi.org/manage/account/publishing/
-   - Add trusted publisher:
-     - **PyPI project name**: `azure-pipeline-validator`
-     - **Owner**: `andrewmaspero`
-     - **Repository name**: `azure-pipeline-validator`
-     - **Workflow filename**: `publish.yml`
-     - **Environment name**: `pypi`
+<a id="license"></a>
+## ![License](https://img.shields.io/badge/License-MIT-1D4ED8?style=for-the-badge&logo=open-source-initiative&logoColor=white)
 
-3. **Enable GitHub Actions permissions**
-   - Repository Settings -> Actions -> General:
-     - Allow actions and reusable workflows.
-     - Allow `GITHUB_TOKEN` write permissions (required for release/tag creation and GHCR publishing).
-
-### Release flow
-
-1. Open PRs with conventional titles (for example `feat: add vscode fallback cache`).
-2. Merge PRs to `main`.
-3. Release Please opens/updates a release PR.
-4. Merge the release PR to create:
-   - semver bump in `pyproject.toml`
-   - Git tag
-   - GitHub Release
-5. Publish workflow runs automatically from the release event.
-
-Consumers can install and use the package via:
-
-```bash
-# Using uvx (no installation needed)
-uvx azure-pipeline-validator --help
-
-# Or install globally
-uv tool install azure-pipeline-validator
-azure-pipeline-validator --help
-
-# Or with pip
-pip install azure-pipeline-validator
-azure-pipeline-validator --help
-```
-
-For manual publishing, use uv directly:
-
-```bash
-uv build
-uv publish
-```
-
-For manual publishing, you'll need to set `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` environment variables, or use a PyPI API token.
-
-## Troubleshooting
-
-| Symptom | Fix |
-| --- | --- |
-| `Set AZDO_PAT ... before running validation.` | Export `AZDO_PAT` or `SYSTEM_ACCESSTOKEN` so the preview call can authenticate. |
-| Preview API returns 401/403 | Confirm `AZDO_PIPELINE_ID` is correct and the PAT has Build Read & Execute permissions. |
-| Templates reference other repos/branches | Set `AZDO_REFNAME` appropriately; cross-repo templates may require additional repository resources in the payload. |
-| yamllint errors but schema/preview pass | Use `--skip-yamllint` temporarily if needed, though linting often surfaces indentation issues before Azure does. |
-| Release Please does not open a release PR | Confirm `.github/workflows/release-please.yml` exists on `main`, actions are enabled, and PR titles/commits follow Conventional Commit types. |
-| PyPI publish fails with trusted publishing/OIDC errors | Verify PyPI trusted publisher is configured for workflow `publish.yml`, environment `pypi`, and project name `azure-pipeline-validator`. |
-| GHCR package publish fails or Packages panel is empty | Ensure workflow has `packages: write`, `GITHUB_TOKEN` write permissions are enabled at repo level, and release workflow completed for the tag. |
-
----
-
-Feel free to fork, contribute improvements, or publish your own build. This README should give you everything you need to adopt the validator in local workflows, UV-based tooling, and CI/CD.
-
-## License
-
-`azure-pipeline-validator` is open source software released under the [MIT License](LICENSE). Contributions are welcome—just open an issue or pull request so we can review changes together.
+MIT. See [LICENSE](LICENSE).

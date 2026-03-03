@@ -46,12 +46,12 @@ Local-first Azure DevOps YAML validation with Azure-authoritative checks by defa
 1. Install `uv` if needed: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 2. Clone and enter the repo: `git clone https://github.com/andrewmaspero/azure-pipeline-validator.git && cd azure-pipeline-validator`
 3. Install dependencies: `uv sync --dev`
-4. Run the CLI: `uv run azure-pipeline-validator --help`
+4. Run the CLI: `uv run azure-pipeline-validator validate --help`
 
 Package usage without cloning:
 
 ```bash
-uvx azure-pipeline-validator --help
+uvx azure-pipeline-validator validate --help
 ```
 
 <a id="features"></a>

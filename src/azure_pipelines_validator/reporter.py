@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from rich import box
 from rich.console import Console
@@ -149,14 +149,12 @@ class Reporter:
             "files": files,
         }
 
-    def as_ndjson(self, summary: ValidationSummary) -> list[dict[str, object]]:
-        """Returns NDJSON records in stable order."""
+    def as_ndjson(self, summary: ValidationSummary) -> Iterator[dict[str, object]]:
+        """Yields NDJSON records in stable order."""
         json_report = self.as_json(summary)
-        records: list[dict[str, object]] = []
         for file_payload in json_report["files"]:
-            records.append({"type": "file", **file_payload})
-        records.append({"type": "summary", **json_report["summary"]})
-        return records
+            yield {"type": "file", **file_payload}
+        yield {"type": "summary", **json_report["summary"]}
 
     def _format_path(self, path: Path) -> str:
         try:

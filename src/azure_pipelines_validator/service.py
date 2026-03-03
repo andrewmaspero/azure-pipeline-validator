@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .azure_devops import AzureDevOpsClient
-from .exceptions import AzureDevOpsError
+from .exceptions import AzureDevOpsError, VscodeValidationError
 from .file_scanner import FileScanner
 from .models import (
     FileValidationResult,
@@ -75,7 +75,7 @@ class ValidationService:
         for file_path in files:
             document = self._loader.load(file_path)
             lint_findings = self._run_lint(document, options)
-            vscode_findings = self._run_vscode([document], options).get(document.path, tuple())
+            vscode_findings, vscode_error = self._run_vscode(document, options)
 
             wrapped_content: str | None = None
             if options.include_schema or options.include_preview:
@@ -94,6 +94,7 @@ class ValidationService:
                 vscode=vscode_findings,
                 final_yaml=final_yaml,
                 preview_error=preview_error,
+                vscode_error=vscode_error,
             )
             results.append(result)
             if options.fail_fast and not result.is_successful:
@@ -181,8 +182,21 @@ class ValidationService:
         return tuple(findings), response.final_yaml, False
 
     def _run_vscode(
-        self, documents: list[YamlDocument], options: ValidationOptions
-    ) -> dict[Path, tuple[VscodeFinding, ...]]:
+        self, document: YamlDocument, options: ValidationOptions
+    ) -> tuple[tuple[VscodeFinding, ...], bool]:
         if not options.include_vscode or self._vscode_validator is None:
-            return {}
-        return self._vscode_validator.run(documents)
+            return tuple(), False
+        try:
+            findings = self._vscode_validator.run([document]).get(document.path, tuple())
+            return findings, False
+        except VscodeValidationError as error:
+            if options.fail_fast:
+                raise
+            finding = VscodeFinding(
+                path=document.path,
+                line=1,
+                column=1,
+                severity="error",
+                message=str(error),
+            )
+            return (finding,), True

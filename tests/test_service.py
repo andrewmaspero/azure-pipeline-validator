@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from azure_pipelines_validator.exceptions import AzureDevOpsError
+from azure_pipelines_validator.exceptions import AzureDevOpsError, VscodeValidationError
 from azure_pipelines_validator.models import (
     FileValidationResult,
     GateMode,
@@ -72,7 +72,7 @@ class FakeSchemaValidator:
         return tuple()
 
 
-def build_service(paths):
+def build_service(paths, *, vscode_validator=None):
     client = FakeClient()
     scanner = FakeScanner(paths)
     loader = FakeLoader()
@@ -84,6 +84,7 @@ def build_service(paths):
         wrapper=wrapper,
         yamllint_runner=FakeYamllintRunner(),
         schema_validator=FakeSchemaValidator(),
+        vscode_validator=vscode_validator,
     )
     return service, client
 
@@ -275,8 +276,7 @@ def test_validation_service_fail_fast_stops_before_extra_vscode_runs(tmp_path: P
             return {document.path: tuple() for document in documents}
 
     vscode_validator = CountingVscodeValidator()
-    service, _ = build_service((file_one, file_two))
-    service._vscode_validator = vscode_validator
+    service, _ = build_service((file_one, file_two), vscode_validator=vscode_validator)
 
     summary = service.validate(
         tmp_path,
@@ -286,3 +286,45 @@ def test_validation_service_fail_fast_stops_before_extra_vscode_runs(tmp_path: P
     assert summary.total_files == 1
     assert vscode_validator.calls == 1
     assert vscode_validator.document_names == ["fail.yml"]
+
+
+def test_validation_service_records_vscode_error_without_aborting(tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    class RaisingVscodeValidator:
+        def run(self, documents):
+            raise VscodeValidationError("vscode unavailable")
+
+    service, _ = build_service((target,), vscode_validator=RaisingVscodeValidator())
+
+    summary = service.validate(
+        target,
+        ValidationOptions(include_lint=False, include_schema=False, include_preview=False),
+    )
+
+    assert summary.total_files == 1
+    assert summary.results[0].vscode_error is True
+    assert summary.results[0].vscode[0].message == "vscode unavailable"
+
+
+def test_validation_service_reraises_vscode_error_when_fail_fast(tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    class RaisingVscodeValidator:
+        def run(self, documents):
+            raise VscodeValidationError("vscode unavailable")
+
+    service, _ = build_service((target,), vscode_validator=RaisingVscodeValidator())
+
+    with pytest.raises(VscodeValidationError, match="vscode unavailable"):
+        service.validate(
+            target,
+            ValidationOptions(
+                include_lint=False,
+                include_schema=False,
+                include_preview=False,
+                fail_fast=True,
+            ),
+        )

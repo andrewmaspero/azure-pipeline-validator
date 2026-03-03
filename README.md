@@ -100,7 +100,7 @@ Notes:
 ## ![CLI](https://img.shields.io/badge/CLI-Reference-0284C7?style=for-the-badge&logo=gnubash&logoColor=white)
 
 ```text
-Usage: azure-pipeline-validator [OPTIONS] [PATH]
+Usage: azure-pipeline-validator validate [OPTIONS] [PATH]
 
 Run authoritative Azure validation by default (preview + vscode), with optional advisory yamllint/schema checks.
 

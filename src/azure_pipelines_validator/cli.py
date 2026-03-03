@@ -2,30 +2,27 @@
 
 from __future__ import annotations
 
-import os
-import re
-import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Annotated, MutableMapping, Sequence
+from typing import Annotated, Literal
 
 import typer
-from pydantic import SecretStr
-from rich import box
 from rich.console import Console
-from rich.table import Table
 
-from .azure_cli import CliDefaults, discover_defaults, discover_pat
-from .azure_devops import AzureDevOpsClient, ProjectSummary
-from .azure_devops import list_projects as fetch_projects
-from .exceptions import AzureDevOpsError, SchemaUnavailableError, SettingsError
+from .azure_devops import AzureDevOpsClient
+from .exceptions import (
+    AzureDevOpsError,
+    SchemaUnavailableError,
+    SettingsError,
+    VscodeValidationError,
+)
 from .file_scanner import FileScanner
-from .models import ValidationOptions
+from .models import GateMode, ValidationOptions
 from .reporter import Reporter
 from .schema_engine import SchemaValidator
-from .schema_sources import download_public_schema
 from .service import ValidationService
-from .settings import AZURE_TIMEOUT_DEFAULT, Settings
+from .settings import Settings
+from .vscode_engine import VscodeValidator
 from .yaml_processing import DocumentLoader, TemplateWrapper
 from .yamllint_engine import YamllintRunner
 
@@ -33,42 +30,13 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     rich_markup_mode="markdown",
+    suggest_commands=True,
     help=(
-        "Validate Azure Pipelines YAML files using yamllint, the official schema, "
-        "and the preview REST API so you see the exact `finalYaml` Azure would run."
+        "Validate Azure Pipelines YAML with authoritative Azure signals by default "
+        "(preview REST API + VS Code language server), plus optional advisory "
+        "yamllint/schema checks."
     ),
 )
-
-
-_INLINE_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*=.*")
-
-
-def _consume_inline_env(
-    args: Sequence[str],
-    *,
-    environ: MutableMapping[str, str] | None = None,
-) -> list[str]:
-    """Apply KEY=VALUE style arguments to the environment.
-
-    Allows commands such as `azure-pipeline-validator AZDO_PAT=foo workflows/` so the
-    user does not need to preface the invocation with shell-specific `VAR=value`
-    syntax. Only bare KEY=VALUE tokens (no leading option flag) are interpreted to
-    avoid swallowing legitimate `--flag=value` options or file paths that contain an
-    equals sign.
-    """
-
-    remaining: list[str] = []
-    target_env = environ if environ is not None else os.environ
-    for token in args:
-        if token.startswith("--"):
-            remaining.append(token)
-            continue
-        if _INLINE_ENV_PATTERN.match(token):
-            key, value = token.split("=", 1)
-            target_env[key] = value
-            continue
-        remaining.append(token)
-    return remaining
 
 
 TargetArg = Annotated[
@@ -164,23 +132,72 @@ AzureTimeoutOption = Annotated[
     ),
 ]
 
-ExcludePatternOption = Annotated[
-    list[str] | None,
+VscodeServerPathOption = Annotated[
+    Path | None,
     typer.Option(
-        "--exclude",
-        "-x",
-        metavar="PATTERN",
+        "--vscode-server-path",
+        metavar="PATH",
         show_default=False,
-        rich_help_panel="Execution control",
+        rich_help_panel="VS Code integration",
+        help="Path to Azure Pipelines extension language server (dist/server.js).",
+    ),
+]
+
+VscodeSchemaPathOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--vscode-schema-path",
+        metavar="PATH",
+        show_default=False,
+        rich_help_panel="VS Code integration",
+        help="Path to Azure Pipelines extension service-schema.json.",
+    ),
+]
+
+VscodeTimeoutOption = Annotated[
+    float,
+    typer.Option(
+        "--vscode-timeout-seconds",
+        metavar="SECONDS",
+        show_default=True,
+        rich_help_panel="VS Code integration",
+        help="Diagnostics wait timeout per file for VS Code language server.",
+    ),
+]
+
+OutputFormatOption = Annotated[
+    Literal["text", "json", "ndjson"],
+    typer.Option(
+        "--output-format",
+        metavar="FORMAT",
+        show_default=True,
+        rich_help_panel="Output",
+        help="Reporter output format.",
+    ),
+]
+
+GateModeOption = Annotated[
+    Literal["authoritative", "all"],
+    typer.Option(
+        "--gate-mode",
+        metavar="MODE",
+        show_default=True,
+        rich_help_panel="Output",
         help=(
-            "Glob pattern or relative path to skip during scanning. "
-            "Repeat the option to exclude multiple files/directories."
+            "Blocking policy for exit code. "
+            "'authoritative' blocks only on preview + vscode failures; "
+            "'all' blocks on every enabled stage."
         ),
     ),
 ]
 
 
-@app.command(help="Run yamllint, schema validation, and Azure preview against YAML files.")
+@app.command(
+    help=(
+        "Run authoritative Azure validation by default (preview + vscode). "
+        "Optional advisory stages (yamllint/schema) can be enabled explicitly."
+    )
+)
 def validate(
     target: TargetArg = Path("."),
     repo_root: RepoRootOption = None,
@@ -190,36 +207,49 @@ def validate(
     azdo_pat: AzurePatOption = None,
     azdo_ref_name: AzureRefOption = None,
     azdo_timeout_seconds: AzureTimeoutOption = None,
+    vscode_server_path: VscodeServerPathOption = None,
+    vscode_schema_path: VscodeSchemaPathOption = None,
+    vscode_timeout_seconds: VscodeTimeoutOption = 5.0,
+    output_format: OutputFormatOption = "text",
+    gate_mode: GateModeOption = "authoritative",
     run_yamllint: Annotated[
         bool,
         typer.Option(
             "--run-yamllint / --skip-yamllint",
-            "--lint / --no-lint",
-            "-l / --no-l",
             rich_help_panel="Validation toggles",
-            help="Run yamllint (aliases: --lint, -l).",
+            help="Enable or disable optional advisory yamllint checks.",
         ),
     ] = False,
     run_schema: Annotated[
         bool,
         typer.Option(
             "--run-schema / --skip-schema",
-            "--schema / --no-schema",
-            "-s / --no-s",
             rich_help_panel="Validation toggles",
-            help="Validate against Microsoft's published YAML schema (aliases: --schema, -s).",
+            help=(
+                "Enable or disable deprecated advisory schema checks. "
+                "Prefer preview+vscode for Azure correctness."
+            ),
         ),
     ] = False,
     run_preview: Annotated[
         bool,
         typer.Option(
             "--run-preview / --skip-preview",
-            "--preview / --no-preview",
-            "-p / --no-p",
             rich_help_panel="Validation toggles",
-            help="Call the Azure DevOps preview endpoint (aliases: --preview, -p).",
+            help="Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.",
         ),
-    ] = False,
+    ] = True,
+    run_vscode: Annotated[
+        bool,
+        typer.Option(
+            "--run-vscode / --skip-vscode",
+            rich_help_panel="Validation toggles",
+            help=(
+                "Validate using the same Azure Pipelines VS Code extension language server "
+                "(auto-detected from local extension install by default)."
+            ),
+        ),
+    ] = True,
     fail_fast: Annotated[
         bool,
         typer.Option(
@@ -228,9 +258,31 @@ def validate(
             help="Stop immediately after the first file that fails validation.",
         ),
     ] = False,
-    exclude: ExcludePatternOption = None,
 ) -> None:
     """Validate Azure Pipelines YAML locally before committing.
+
+    Args:
+        target: File or directory to validate.
+        repo_root: Optional repository root used to resolve template references.
+        azdo_org: Optional Azure DevOps organization URL.
+        azdo_project: Optional Azure DevOps project name.
+        azdo_pipeline_id: Optional Azure DevOps pipeline ID.
+        azdo_pat: Optional PAT or OAuth token override.
+        azdo_ref_name: Optional git ref used for template expansion.
+        azdo_timeout_seconds: Optional timeout override for Azure DevOps requests.
+        vscode_server_path: Optional path to the language-server binary.
+        vscode_schema_path: Optional path to the language-server schema file.
+        vscode_timeout_seconds: Diagnostic timeout used by VS Code validation.
+        output_format: Reporter output format.
+        gate_mode: Gate mode used to determine blocking behavior.
+        run_yamllint: Enable advisory yamllint checks.
+        run_schema: Enable advisory schema checks.
+        run_preview: Enable preview validation against Azure DevOps.
+        run_vscode: Enable VS Code language-server validation.
+        fail_fast: Stop at the first failing file.
+
+    Raises:
+        typer.Exit: When configuration, validation, or runtime failures occur.
 
     Examples:
         uv run azure-pipeline-validator validate .
@@ -238,19 +290,12 @@ def validate(
         uvx --from git+https://github.com/your-org/azure-pipeline-validator \
             azure-pipeline-validator workflows/
     """
-
     console = Console()
     effective_repo_root = (repo_root or Path.cwd()).resolve()
-
-    if not any((run_yamllint, run_schema, run_preview)):
-        console.print(
-            "[bold yellow]Select at least one validation toggle "
-            "(use --lint/-l, --schema/-s, or --preview/-p)."
-        )
-        raise typer.Exit(code=2)
+    requires_azure = run_schema or run_preview
 
     settings = None
-    if run_preview:
+    if requires_azure:
         try:
             settings = Settings.from_environment(
                 repo_root=effective_repo_root,
@@ -265,36 +310,31 @@ def validate(
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=2) from error
 
-    scanner = FileScanner(effective_repo_root, exclude_patterns=exclude)
+    scanner = FileScanner(effective_repo_root)
     loader = DocumentLoader()
     wrapper = TemplateWrapper(repo_root=effective_repo_root)
     yamllint_runner = YamllintRunner() if run_yamllint else None
+    try:
+        vscode_validator = (
+            VscodeValidator(
+                repo_root=effective_repo_root,
+                server_path=vscode_server_path,
+                schema_path=vscode_schema_path,
+                timeout_seconds=vscode_timeout_seconds,
+            )
+            if run_vscode
+            else None
+        )
+    except VscodeValidationError as error:
+        console.print(f"[bold red]{error}")
+        raise typer.Exit(code=2) from error
 
     client_context = AzureDevOpsClient(settings) if settings is not None else nullcontext(None)
 
     with client_context as client:
         schema_validator = None
-        if run_schema:
-            schema_supplier = None
-            if client is not None:
-                schema_supplier = client.download_schema
-            else:
-                timeout_override = (
-                    settings.request_timeout_seconds
-                    if settings is not None
-                    else (
-                        float(azdo_timeout_seconds)
-                        if azdo_timeout_seconds is not None
-                        else AZURE_TIMEOUT_DEFAULT
-                    )
-                )
-
-                def _download_schema() -> str:
-                    return download_public_schema(timeout_override)
-
-                schema_supplier = _download_schema
-
-            schema_validator = SchemaValidator(schema_supplier)
+        if run_schema and client is not None:
+            schema_validator = SchemaValidator(client.download_schema)
         service = ValidationService(
             client=client,
             scanner=scanner,
@@ -302,105 +342,23 @@ def validate(
             wrapper=wrapper,
             yamllint_runner=yamllint_runner,
             schema_validator=schema_validator,
+            vscode_validator=vscode_validator,
         )
         options = ValidationOptions(
             include_lint=run_yamllint,
             include_schema=run_schema,
             include_preview=run_preview,
+            include_vscode=run_vscode,
+            gate_mode=GateMode(gate_mode),
             fail_fast=fail_fast,
         )
         try:
             summary = service.validate(target=target, options=options)
-        except (AzureDevOpsError, SchemaUnavailableError) as error:
+        except (AzureDevOpsError, SchemaUnavailableError, VscodeValidationError) as error:
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=1) from error
 
     reporter = Reporter(repo_root=effective_repo_root, console=console)
-    reporter.display(summary)
+    reporter.display(summary, output_format=output_format)
     if not summary.success:
         raise typer.Exit(code=1)
-
-
-@app.command(name="projects", help="List Azure DevOps projects visible to your PAT.")
-def list_projects(
-    azdo_org: AzureOrgOption = None,
-    azdo_pat: AzurePatOption = None,
-    top: Annotated[
-        int,
-        typer.Option(
-            "--top",
-            min=1,
-            max=200,
-            show_default=True,
-            help="Maximum number of projects to display.",
-        ),
-    ] = 25,
-) -> None:
-    console = Console()
-    defaults = discover_defaults()
-    organization_value = _resolve_org(azdo_org, defaults)
-    if not organization_value:
-        console.print(
-            "[bold red]Set AZDO_ORG or configure a default organization via "
-            "`az devops configure --defaults organization=...`."
-        )
-        raise typer.Exit(code=2)
-
-    token = _resolve_token(azdo_pat, organization_value)
-    if token is None:
-        console.print(
-            "[bold red]Set AZDO_PAT / SYSTEM_ACCESSTOKEN or sign in with `az devops login`."
-        )
-        raise typer.Exit(code=2)
-
-    try:
-        projects = _fetch_projects(organization_value, token, top)
-    except AzureDevOpsError as error:
-        console.print(f"[bold red]{error}")
-        raise typer.Exit(code=1) from error
-
-    if not projects:
-        console.print("[bold yellow]No projects returned for this organization.")
-        return
-
-    table = Table(title="Azure DevOps projects", box=box.ROUNDED, highlight=True)
-    table.add_column("Name", overflow="fold")
-    table.add_column("ID", overflow="fold")
-    table.add_column("State")
-
-    for project in projects:
-        table.add_row(project.name, project.id, project.state)
-
-    console.print(table)
-
-
-def main() -> None:
-    """Entry point used by the console script."""
-
-    new_args = _consume_inline_env(sys.argv[1:])
-    commands = {"projects"}
-    if new_args and new_args[0] not in commands:
-        new_args = ["validate", *new_args]
-    sys.argv = [sys.argv[0], *new_args]
-    app()
-
-
-def _resolve_org(value: str | None, defaults: CliDefaults) -> str | None:
-    return value or os.getenv("AZDO_ORG") or defaults.organization
-
-
-def _resolve_token(value: str | None, organization: str) -> str | None:
-    return (
-        value
-        or os.getenv("AZDO_PAT")
-        or os.getenv("SYSTEM_ACCESSTOKEN")
-        or discover_pat(organization)
-    )
-
-
-def _fetch_projects(organization: str, token: str, top: int) -> list[ProjectSummary]:
-    return fetch_projects(organization, SecretStr(token), top=top)
-
-
-if __name__ == "__main__":  # pragma: no cover - manual execution helper
-    main()

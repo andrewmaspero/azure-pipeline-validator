@@ -8,7 +8,6 @@ from typing import Final
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
 
-from .azure_cli import CliDefaults, discover_defaults, discover_pat
 from .exceptions import SettingsError
 
 
@@ -37,24 +36,38 @@ class Settings(BaseModel):
         ref_name: str | None = None,
         timeout_seconds: float | str | None = None,
     ) -> "Settings":
-        """Create settings by reading Azure DevOps variables or explicit overrides."""
+        """Create settings from explicit values or Azure DevOps environment variables.
 
+        Args:
+            repo_root: Optional repository root used for path resolution.
+            organization: Optional organization override.
+            project: Optional project override.
+            pipeline_id: Optional pipeline ID override.
+            personal_access_token: Optional PAT override.
+            ref_name: Optional ref name override.
+            timeout_seconds: Optional timeout override.
+
+        Returns:
+            Parsed and validated settings instance.
+
+        Raises:
+            SettingsError: If required settings are missing or malformed.
+            ValueError: If numeric conversion fails.
+        """
         resolved_root = (repo_root or Path.cwd()).resolve()
-        cli_defaults: CliDefaults = discover_defaults()
+        token = personal_access_token or os.getenv("AZDO_PAT") or os.getenv("SYSTEM_ACCESSTOKEN")
+        if not token:
+            raise SettingsError(
+                "Set AZDO_PAT (or SYSTEM_ACCESSTOKEN) before running preview/schema validation."
+            )
 
-        org_value = organization or os.getenv("AZDO_ORG") or cli_defaults.organization
+        org_value = organization or os.getenv("AZDO_ORG")
         if not org_value:
-            raise SettingsError(
-                "Organization must be provided via parameters, AZDO_ORG, or configured via "
-                "`az devops configure --defaults organization=...`."
-            )
+            raise SettingsError("Environment variable AZDO_ORG is required")
 
-        project_value = project or os.getenv("AZDO_PROJECT") or cli_defaults.project
+        project_value = project or os.getenv("AZDO_PROJECT")
         if not project_value:
-            raise SettingsError(
-                "Project must be provided via parameters, AZDO_PROJECT, or configured via "
-                "`az devops configure --defaults project=...`."
-            )
+            raise SettingsError("Environment variable AZDO_PROJECT is required")
 
         pipeline_value = pipeline_id or os.getenv("AZDO_PIPELINE_ID")
         if pipeline_value is None:
@@ -73,18 +86,6 @@ class Settings(BaseModel):
         else:
             timeout_raw = os.getenv("AZDO_TIMEOUT_SECONDS")
             timeout_value = float(timeout_raw) if timeout_raw else AZURE_TIMEOUT_DEFAULT
-
-        token = (
-            personal_access_token
-            or os.getenv("AZDO_PAT")
-            or os.getenv("SYSTEM_ACCESSTOKEN")
-            or discover_pat(org_value)
-        )
-        if not token:
-            raise SettingsError(
-                "Preview validation requires AZDO_PAT (SYSTEM_ACCESSTOKEN) or an `az "
-                "devops login` session."
-            )
 
         return cls(
             organization=org_value,

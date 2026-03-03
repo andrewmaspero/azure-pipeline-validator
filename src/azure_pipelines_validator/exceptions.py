@@ -11,6 +11,12 @@ class AzureDevOpsError(RuntimeError):
     """Wraps errors returned by the Azure DevOps REST API."""
 
     def __init__(self, status_code: int, detail: str) -> None:
+        """Initialize an Azure DevOps API error.
+
+        Args:
+            status_code: HTTP status code returned by the API.
+            detail: Error detail from the response payload.
+        """
         message = f"Azure DevOps responded with HTTP {status_code}: {detail}"
         super().__init__(message)
         self.status_code = status_code
@@ -23,3 +29,7 @@ class SchemaUnavailableError(RuntimeError):
 
 class ValidationHalt(RuntimeError):
     """Raised when validation stops early because of fail-fast."""
+
+
+class VscodeValidationError(RuntimeError):
+    """Raised when the VS Code language-server validation stage cannot run."""

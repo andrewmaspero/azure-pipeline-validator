@@ -1,0 +1,594 @@
+"""VS Code Azure Pipelines language-server backed validation.
+
+This module executes validation through the Azure Pipelines VS Code language
+server so diagnostics match editor behavior.
+"""
+
+from __future__ import annotations
+
+import errno
+import hashlib
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Sequence
+from urllib.error import URLError
+from urllib.request import urlopen
+from zipfile import BadZipFile, ZipFile
+
+from .exceptions import VscodeValidationError
+from .models import VscodeFinding
+from .yaml_processing import YamlDocument
+
+_EXTENSION_PREFIX = "ms-azure-devops.azure-pipelines-"
+_DEFAULT_TIMEOUT_SECONDS = 5.0
+_DEFAULT_EXTENSION_PUBLISHER = "ms-azure-devops"
+_DEFAULT_EXTENSION_NAME = "azure-pipelines"
+_DEFAULT_EXTENSION_VERSION = "latest"
+_DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 30.0
+_DEFAULT_CACHE_DIR = Path.home() / ".azure-pipeline-validator" / "vscode-assets"
+_VSIX_ASSET_NAME = "Microsoft.VisualStudio.Services.VSIXPackage"
+
+
+class VscodeValidator:
+    """Runs diagnostics using the Azure Pipelines VS Code language server."""
+
+    def __init__(
+        self,
+        repo_root: Path,
+        *,
+        server_path: Path | None = None,
+        schema_path: Path | None = None,
+        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        node_binary: str = "node",
+    ) -> None:
+        """Initializes a VS Code language-server validator.
+
+        Args:
+            repo_root: Repository root used for LSP workspace initialization.
+            server_path: Optional explicit path to the language server JavaScript
+                entrypoint.
+            schema_path: Optional explicit path to the extension schema file.
+            timeout_seconds: Per-request timeout budget for LSP communication.
+            node_binary: Node.js executable used to launch the language server.
+
+        Raises:
+            VscodeValidationError: If server/schema paths cannot be resolved.
+        """
+        self._repo_root = repo_root.resolve()
+        self._timeout_seconds = timeout_seconds
+        self._node_binary = node_binary
+        resolved_server, resolved_schema = _resolve_server_and_schema(
+            server_path=server_path,
+            schema_path=schema_path,
+        )
+        self._server_path = resolved_server
+        self._schema_path = resolved_schema
+
+    @property
+    def server_path(self) -> Path:
+        """Returns the resolved language server path."""
+        return self._server_path
+
+    @property
+    def schema_path(self) -> Path:
+        """Returns the resolved schema path used by the language server."""
+        return self._schema_path
+
+    def run(self, documents: Sequence[YamlDocument]) -> dict[Path, tuple[VscodeFinding, ...]]:
+        """Runs LSP diagnostics for a batch of YAML documents.
+
+        Args:
+            documents: Documents to validate.
+
+        Returns:
+            Mapping from document path to the tuple of emitted findings.
+
+        Raises:
+            VscodeValidationError: If the language server cannot initialize or a
+                document diagnostic request times out.
+        """
+        if not documents:
+            return {}
+        with _LspSession(
+            repo_root=self._repo_root,
+            server_path=self._server_path,
+            schema_path=self._schema_path,
+            timeout_seconds=self._timeout_seconds,
+            node_binary=self._node_binary,
+        ) as session:
+            results: dict[Path, tuple[VscodeFinding, ...]] = {}
+            for document in documents:
+                results[document.path] = session.validate_document(document)
+            return results
+
+
+class _LspSession:
+    def __init__(
+        self,
+        *,
+        repo_root: Path,
+        server_path: Path,
+        schema_path: Path,
+        timeout_seconds: float,
+        node_binary: str,
+    ) -> None:
+        self._repo_root = repo_root
+        self._schema_path = schema_path
+        self._schema_uri = schema_path.resolve().as_uri()
+        self._schema_text = schema_path.read_text(encoding="utf-8")
+        self._timeout_seconds = timeout_seconds
+        try:
+            self._process = subprocess.Popen(
+                [node_binary, str(server_path), "--stdio"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+                env={**os.environ, "VSCODE_NLS_CONFIG": "{}"},
+            )
+        except FileNotFoundError as error:
+            raise VscodeValidationError(
+                f"Unable to launch VS Code language server because '{node_binary}' was not found."
+            ) from error
+        self._next_id = 1
+        self._responses: dict[int, dict[str, Any]] = {}
+        self._diagnostics_by_uri: dict[str, list[dict[str, Any]]] = {}
+        self._read_buffer = bytearray()
+        self._initialize()
+
+    def __enter__(self) -> "_LspSession":
+        return self
+
+    def __exit__(self, exc_type, exc, exc_tb) -> None:
+        try:
+            self._shutdown()
+        finally:
+            if self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+
+    def validate_document(self, document: YamlDocument) -> tuple[VscodeFinding, ...]:
+        uri = document.path.resolve().as_uri()
+        self._diagnostics_by_uri.pop(uri, None)
+
+        self._send_notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "yaml",
+                    "version": 1,
+                    "text": document.content,
+                }
+            },
+        )
+
+        diagnostics = self._wait_for_diagnostics(uri, self._timeout_seconds)
+        self._send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+
+        if diagnostics is None:
+            stderr = self._drain_stderr()
+            details = f" (stderr: {stderr})" if stderr else ""
+            raise VscodeValidationError(
+                f"Timed out waiting for VS Code diagnostics for {document.path}{details}"
+            )
+
+        findings: list[VscodeFinding] = []
+        for item in diagnostics:
+            start = item.get("range", {}).get("start", {})
+            line = int(start.get("line", 0)) + 1
+            column = int(start.get("character", 0)) + 1
+            findings.append(
+                VscodeFinding(
+                    path=document.path,
+                    line=line,
+                    column=column,
+                    severity=_severity_label(item.get("severity")),
+                    message=str(item.get("message", "")).strip(),
+                    code=item.get("code"),
+                )
+            )
+        return tuple(findings)
+
+    def _initialize(self) -> None:
+        response = self._send_request(
+            "initialize",
+            {
+                "processId": os.getpid(),
+                "rootUri": self._repo_root.as_uri(),
+                "capabilities": {},
+                "workspaceFolders": [
+                    {"uri": self._repo_root.as_uri(), "name": self._repo_root.name}
+                ],
+            },
+        )
+        if response.get("error"):
+            raise VscodeValidationError(
+                f"VS Code language server initialize failed: {response['error']}"
+            )
+
+        self._send_notification("initialized", {})
+        self._send_notification(
+            "workspace/didChangeConfiguration",
+            {
+                "settings": {
+                    "yaml": {
+                        "validate": True,
+                        "schemaStore": {"enable": False},
+                        "schemas": {self._schema_uri: ["*"]},
+                    }
+                }
+            },
+        )
+        self._send_notification("json/schemaAssociations", {"*": [self._schema_uri]})
+
+    def _shutdown(self) -> None:
+        try:
+            self._send_request("shutdown", {})
+        except Exception:
+            return
+        self._send_notification("exit", {})
+
+    def _send_request(self, method: str, params: Any) -> dict[str, Any]:
+        request_id = self._next_id
+        self._next_id += 1
+        self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + self._timeout_seconds
+        while time.monotonic() < deadline:
+            remaining = max(deadline - time.monotonic(), 0.01)
+            self._pump_once(remaining)
+            if request_id in self._responses:
+                return self._responses.pop(request_id)
+        raise VscodeValidationError(f"Timed out waiting for LSP response to '{method}'")
+
+    def _send_notification(self, method: str, params: Any) -> None:
+        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _wait_for_diagnostics(
+        self, uri: str, timeout_seconds: float
+    ) -> list[dict[str, Any]] | None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if uri in self._diagnostics_by_uri:
+                return self._diagnostics_by_uri.pop(uri)
+            remaining = max(deadline - time.monotonic(), 0.01)
+            self._pump_once(remaining)
+        return None
+
+    def _pump_once(self, timeout_seconds: float) -> None:
+        message = self._read_message(timeout_seconds)
+        if message is None:
+            return
+        method = message.get("method")
+        message_id = message.get("id")
+
+        if method == "textDocument/publishDiagnostics":
+            params = message.get("params") or {}
+            uri = params.get("uri")
+            if uri:
+                self._diagnostics_by_uri[str(uri)] = list(params.get("diagnostics") or [])
+            return
+
+        if method and message_id is not None:
+            result = self._handle_server_request(method, message.get("params"))
+            self._send({"jsonrpc": "2.0", "id": message_id, "result": result})
+            return
+
+        if message_id is not None and "method" not in message:
+            self._responses[int(message_id)] = message
+
+    def _handle_server_request(self, method: str, params: Any) -> Any:
+        if method == "custom/schema/request":
+            return self._schema_uri
+        if method == "custom/schema/content":
+            uri = str(params or "")
+            if uri == self._schema_uri:
+                return self._schema_text
+            if uri.startswith("file://"):
+                try:
+                    return Path(uri.replace("file://", "", 1)).read_text(encoding="utf-8")
+                except Exception:
+                    return ""
+            return ""
+        if method == "vscode/content":
+            return ""
+        return None
+
+    def _send(self, payload: dict[str, Any]) -> None:
+        if self._process.stdin is None:
+            raise VscodeValidationError("VS Code language server stdin is unavailable")
+        content = json.dumps(payload).encode("utf-8")
+        header = f"Content-Length: {len(content)}\r\n\r\n".encode("ascii")
+        self._process.stdin.write(header + content)
+        self._process.stdin.flush()
+
+    def _read_message(self, timeout_seconds: float) -> dict[str, Any] | None:
+        if self._process.stdout is None:
+            raise VscodeValidationError("VS Code language server stdout is unavailable")
+        fd = self._process.stdout.fileno()
+        deadline = time.monotonic() + timeout_seconds
+
+        while time.monotonic() < deadline:
+            parsed = _try_parse_message(self._read_buffer)
+            if parsed is not None:
+                message, consumed = parsed
+                del self._read_buffer[:consumed]
+                return message
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            if not _wait_for_fd(fd, remaining):
+                return None
+            chunk = os.read(fd, 8192)
+            if not chunk:
+                raise VscodeValidationError("VS Code language server closed unexpectedly")
+            self._read_buffer.extend(chunk)
+        return None
+
+    def _drain_stderr(self) -> str:
+        if self._process.stderr is None:
+            return ""
+        fd = self._process.stderr.fileno()
+        chunks: list[bytes] = []
+        try:
+            while _wait_for_fd(fd, 0.05):
+                try:
+                    chunk = os.read(fd, 8192)
+                except OSError as error:
+                    if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        break
+                    raise
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except Exception:
+            return ""
+        return b"".join(chunks).decode("utf-8", errors="replace").strip()
+
+
+def _wait_for_fd(fd: int, timeout_seconds: float) -> bool:
+    try:
+        ready, _, _ = select.select([fd], [], [], timeout_seconds)
+        return bool(ready)
+    except Exception:
+        # Fallback for platforms/selectors where subprocess pipes are unsupported.
+        return True
+
+
+def _try_parse_message(buffer: bytearray) -> tuple[dict[str, Any], int] | None:
+    header_end = buffer.find(b"\r\n\r\n")
+    if header_end < 0:
+        return None
+
+    header_bytes = bytes(buffer[:header_end])
+    content_length = 0
+    for line in header_bytes.splitlines():
+        text = line.decode("ascii", errors="replace")
+        if text.lower().startswith("content-length:"):
+            try:
+                content_length = int(text.split(":", 1)[1].strip())
+            except ValueError as exc:
+                raise VscodeValidationError(f"Invalid content-length header: {text}") from exc
+            break
+    if content_length <= 0:
+        raise VscodeValidationError("Missing Content-Length header from language server")
+
+    payload_start = header_end + 4
+    payload_end = payload_start + content_length
+    if len(buffer) < payload_end:
+        return None
+
+    payload = bytes(buffer[payload_start:payload_end])
+    return json.loads(payload.decode("utf-8")), payload_end
+
+
+def _severity_label(raw: Any) -> str:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return "unknown"
+    if value == 1:
+        return "error"
+    if value == 2:
+        return "warning"
+    if value == 3:
+        return "info"
+    if value == 4:
+        return "hint"
+    return "unknown"
+
+
+def _resolve_server_and_schema(
+    *,
+    server_path: Path | None,
+    schema_path: Path | None,
+) -> tuple[Path, Path]:
+    if (server_path is None) != (schema_path is None):
+        raise VscodeValidationError(
+            "Pass both --vscode-server-path and --vscode-schema-path together."
+        )
+
+    if server_path and schema_path:
+        return _validate_paths(server_path.resolve(), schema_path.resolve())
+
+    discovered = _discover_installed_extension()
+    if discovered is not None:
+        discovered_server, discovered_schema = discovered
+        return _validate_paths(discovered_server, discovered_schema)
+
+    discovered_server, discovered_schema = _resolve_bootstrapped_extension()
+    return _validate_paths(
+        server_path.resolve() if server_path else discovered_server,
+        schema_path.resolve() if schema_path else discovered_schema,
+    )
+
+
+def _validate_paths(server_path: Path, schema_path: Path) -> tuple[Path, Path]:
+    if not server_path.exists():
+        raise VscodeValidationError(f"VS Code language server not found: {server_path}")
+    if not schema_path.exists():
+        raise VscodeValidationError(f"VS Code schema file not found: {schema_path}")
+    return server_path, schema_path
+
+
+def _discover_installed_extension() -> tuple[Path, Path] | None:
+    roots = (
+        Path.home() / ".cursor" / "extensions",
+        Path.home() / ".vscode" / "extensions",
+    )
+    installations: list[tuple[tuple[int, int, int], float, Path, Path]] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for candidate in root.glob(f"{_EXTENSION_PREFIX}*"):
+            if not candidate.is_dir():
+                continue
+            server_path = candidate / "dist" / "server.js"
+            schema_path = candidate / "service-schema.json"
+            if not server_path.exists() or not schema_path.exists():
+                continue
+            stat = candidate.stat()
+            installations.append(
+                (_extract_version_key(candidate.name), stat.st_mtime, server_path, schema_path)
+            )
+
+    if not installations:
+        return None
+
+    installations.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    _, _, server, schema = installations[0]
+    return server.resolve(), schema.resolve()
+
+
+def _resolve_bootstrapped_extension() -> tuple[Path, Path]:
+    publisher = os.getenv("AZP_VALIDATOR_VSCODE_PUBLISHER", _DEFAULT_EXTENSION_PUBLISHER)
+    extension = os.getenv("AZP_VALIDATOR_VSCODE_EXTENSION", _DEFAULT_EXTENSION_NAME)
+    version = os.getenv("AZP_VALIDATOR_VSCODE_VERSION", _DEFAULT_EXTENSION_VERSION)
+    cache_root = Path(
+        os.getenv("AZP_VALIDATOR_VSCODE_CACHE_DIR", str(_DEFAULT_CACHE_DIR))
+    ).expanduser()
+    cache_dir = cache_root / f"{publisher}.{extension}" / version
+    server_path = cache_dir / "dist" / "server.js"
+    schema_path = cache_dir / "service-schema.json"
+    if server_path.exists() and schema_path.exists():
+        return server_path.resolve(), schema_path.resolve()
+
+    if _env_flag("AZP_VALIDATOR_VSCODE_OFFLINE"):
+        raise VscodeValidationError(
+            "VS Code assets are not cached and offline mode is enabled. "
+            "Pre-seed the cache or disable AZP_VALIDATOR_VSCODE_OFFLINE."
+        )
+
+    download_url = (
+        f"https://{publisher}.gallery.vsassets.io/_apis/public/gallery/publisher/"
+        f"{publisher}/extension/{extension}/{version}/assetbyname/{_VSIX_ASSET_NAME}"
+    )
+    expected_sha256 = os.getenv("AZP_VALIDATOR_VSCODE_SHA256")
+    timeout_seconds = _env_float(
+        "AZP_VALIDATOR_VSCODE_DOWNLOAD_TIMEOUT_SECONDS",
+        _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
+    )
+    _bootstrap_extension_assets(
+        download_url=download_url,
+        cache_dir=cache_dir,
+        timeout_seconds=timeout_seconds,
+        expected_sha256=expected_sha256,
+    )
+    return _validate_paths(server_path.resolve(), schema_path.resolve())
+
+
+def _bootstrap_extension_assets(
+    *,
+    download_url: str,
+    cache_dir: Path,
+    timeout_seconds: float,
+    expected_sha256: str | None,
+) -> None:
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="vscode-assets-") as temp_dir:
+        temp_path = Path(temp_dir)
+        archive_path = temp_path / "extension.vsix"
+        extract_path = temp_path / "extract"
+        try:
+            with urlopen(download_url, timeout=timeout_seconds) as response:
+                archive_path.write_bytes(response.read())
+        except URLError as exc:
+            raise VscodeValidationError(
+                f"Unable to download Azure Pipelines VS Code extension assets: {exc}"
+            ) from exc
+
+        if expected_sha256:
+            actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            if actual_sha256.lower() != expected_sha256.lower():
+                raise VscodeValidationError(
+                    "Downloaded VSIX checksum mismatch. "
+                    f"expected={expected_sha256.lower()} actual={actual_sha256.lower()}"
+                )
+
+        try:
+            with ZipFile(archive_path) as archive:
+                _extract_vsix_member(
+                    archive, "extension/dist/server.js", extract_path / "dist" / "server.js"
+                )
+                _extract_vsix_member(
+                    archive,
+                    "extension/service-schema.json",
+                    extract_path / "service-schema.json",
+                )
+        except (BadZipFile, KeyError) as exc:
+            raise VscodeValidationError(
+                "Downloaded VSIX archive is invalid or missing required files."
+            ) from exc
+
+        target_parent = cache_dir.parent
+        target_name = cache_dir.name
+        temp_target = target_parent / f".{target_name}.tmp"
+        if temp_target.exists():
+            shutil.rmtree(temp_target)
+        shutil.move(str(extract_path), str(temp_target))
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        temp_target.replace(cache_dir)
+
+
+def _extract_vsix_member(archive: ZipFile, member_name: str, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with archive.open(member_name) as source, target_path.open("wb") as destination:
+        shutil.copyfileobj(source, destination)
+
+
+def _env_flag(name: str) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise VscodeValidationError(f"Environment variable {name} must be a number.") from exc
+    if value <= 0:
+        raise VscodeValidationError(f"Environment variable {name} must be greater than zero.")
+    return value
+
+
+def _extract_version_key(folder_name: str) -> tuple[int, int, int]:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", folder_name)
+    if not match:
+        return (0, 0, 0)
+    return tuple(int(part) for part in match.groups())

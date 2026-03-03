@@ -1,0 +1,153 @@
+name: Publish
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+jobs:
+  publish-pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Check if version already exists on PyPI
+        id: pypi_check
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PACKAGE_NAME: azure-pipeline-validator
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          skip_publish="$(python - <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+
+package_name = os.environ["PACKAGE_NAME"]
+version = os.environ["RELEASE_TAG"].lstrip("v")
+url = f"https://pypi.org/pypi/{package_name}/json"
+
+try:
+    with urllib.request.urlopen(url, timeout=15) as response:
+        payload = json.load(response)
+except urllib.error.HTTPError as error:
+    if error.code == 404:
+        print("false")
+    else:
+        raise
+else:
+    releases = payload.get("releases", {})
+    print("true" if releases.get(version) else "false")
+PY
+          )"
+          echo "skip_publish=${skip_publish}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install uv
+        if: steps.pypi_check.outputs.skip_publish != 'true'
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: latest
+
+      - name: Install Python 3.13
+        if: steps.pypi_check.outputs.skip_publish != 'true'
+        run: uv python install 3.13
+
+      - name: Build package
+        if: steps.pypi_check.outputs.skip_publish != 'true'
+        run: uv build
+        env:
+          UV_PYTHON: python3.13
+
+      - name: Publish package distributions to PyPI
+        if: steps.pypi_check.outputs.skip_publish != 'true'
+        run: uv publish --trusted-publishing always
+        env:
+          UV_PYTHON: python3.13
+
+      - name: Skip publish notice
+        if: steps.pypi_check.outputs.skip_publish == 'true'
+        run: echo "Version already published on PyPI; skipping publish step."
+
+  publish-ghcr-oci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: latest
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Build package
+        run: uv build
+        env:
+          UV_PYTHON: python3.13
+
+      - name: Compute OCI reference
+        id: oci
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${owner_lc}/azure-pipeline-validator-dist:${RELEASE_TAG}"
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Check if OCI artifact already exists
+        id: ghcr_check
+        env:
+          IMAGE_REF: ${{ steps.oci.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          if oras manifest fetch "${IMAGE_REF}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Push OCI artifact with Python distributions
+        if: steps.ghcr_check.outputs.exists != 'true'
+        env:
+          IMAGE_REF: ${{ steps.oci.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          oras push "${IMAGE_REF}" \
+            --artifact-type application/vnd.azure-pipeline-validator.dist.v1+tar \
+            --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --annotation "org.opencontainers.image.description=Python dist artifacts for azure-pipeline-validator" \
+            dist/*
+
+      - name: Skip GHCR publish notice
+        if: steps.ghcr_check.outputs.exists == 'true'
+        run: echo "GHCR artifact already exists for this tag; skipping publish step."

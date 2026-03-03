@@ -1,9 +1,10 @@
 name: Publish
 
 on:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,19 +17,32 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Check out release tag
+      - name: Check out source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
+
+      - name: Determine package version
+        id: version
+        run: |
+          set -euo pipefail
+          package_version="$(
+            python - <<'PY'
+            import tomllib
+            from pathlib import Path
+
+            payload = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+            print(payload["project"]["version"])
+            PY
+          )"
+          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=v${package_version}" >> "${GITHUB_OUTPUT}"
 
       - name: Check if version already exists on PyPI
         id: pypi_check
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           PACKAGE_NAME: azure-pipeline-validator
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
           skip_publish="$(
             python - <<'PY'
             import json
@@ -37,7 +51,7 @@ jobs:
             import urllib.request
 
             package_name = os.environ["PACKAGE_NAME"]
-            version = os.environ["RELEASE_TAG"].lstrip("v")
+            version = os.environ["PACKAGE_VERSION"]
             url = f"https://pypi.org/pypi/{package_name}/json"
 
             try:
@@ -87,10 +101,24 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Check out release tag
+      - name: Check out source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
+
+      - name: Determine package version
+        id: version
+        run: |
+          set -euo pipefail
+          package_version="$(
+            python - <<'PY'
+            import tomllib
+            from pathlib import Path
+
+            payload = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+            print(payload["project"]["version"])
+            PY
+          )"
+          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=v${package_version}" >> "${GITHUB_OUTPUT}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
@@ -108,7 +136,7 @@ jobs:
       - name: Compute OCI reference
         id: oci
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
         run: |
           set -euo pipefail
           owner_lc="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"

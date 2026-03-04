@@ -71,7 +71,7 @@ def test_reporter_renders_summary(tmp_path: Path) -> None:
     assert "pipeline.yml" in output
 
 
-def test_reporter_renders_skipped_stage_in_text(tmp_path: Path) -> None:
+def test_reporter_hides_disabled_stage_columns_in_text(tmp_path: Path) -> None:
     console = Console(record=True)
     file_path = tmp_path / "pipeline.yml"
     file_path.write_text("trigger: none", encoding="utf-8")
@@ -88,13 +88,18 @@ def test_reporter_renders_skipped_stage_in_text(tmp_path: Path) -> None:
             ),
         ),
         include_lsp=False,
+        include_lint=False,
+        include_schema=False,
     )
 
     reporter = Reporter(repo_root=tmp_path, console=console)
     reporter.display(summary)
 
     output = console.export_text()
-    assert "skip" in output
+    assert "yamllint" not in output
+    assert "schema" not in output
+    assert "lsp" not in output
+    assert "preview" in output
 
 
 def test_reporter_json_output_contract(tmp_path: Path) -> None:
@@ -193,3 +198,40 @@ def test_reporter_raises_on_unknown_output_format(tmp_path: Path) -> None:
     reporter = Reporter(repo_root=tmp_path, console=console)
     with pytest.raises(ValueError, match="Unsupported output_format 'xml'"):
         reporter.display(summary, output_format="xml")
+
+
+def test_reporter_ndjson_includes_per_diagnostic_records(tmp_path: Path) -> None:
+    console = Console(record=True)
+    file_path = tmp_path / "pipeline.yml"
+    file_path.write_text("trigger: none", encoding="utf-8")
+    summary = ValidationSummary(
+        (
+            FileValidationResult(
+                path=file_path,
+                yamllint=tuple(),
+                schema=tuple(),
+                preview=(
+                    PreviewFinding(
+                        path=file_path,
+                        message="preview error",
+                        level="error",
+                    ),
+                ),
+                lsp=tuple(),
+                final_yaml=None,
+            ),
+        ),
+        include_lint=False,
+        include_schema=False,
+        include_preview=True,
+        include_lsp=False,
+    )
+
+    reporter = Reporter(repo_root=tmp_path, console=console)
+    reporter.display(summary, output_format="ndjson")
+
+    records = [json.loads(line) for line in console.export_text().splitlines() if line.strip()]
+    assert any(record.get("type") == "diagnostic" for record in records)
+    diagnostic = next(record for record in records if record.get("type") == "diagnostic")
+    assert diagnostic["stage"] == "preview"
+    assert diagnostic["message"] == "preview error"

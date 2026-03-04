@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .models import StageName, StageStatus, ValidationSummary
+from .models import FileValidationResult, StageName, StageStatus, ValidationSummary
 
 REPORT_SCHEMA_VERSION = 2
 
@@ -58,31 +58,22 @@ class Reporter:
     def _display_text(self, summary: ValidationSummary) -> None:
         table = Table(title="Azure Pipelines YAML validation", expand=True, box=box.ROUNDED)
         table.add_column("File", overflow="fold")
-        table.add_column("yamllint")
-        table.add_column("schema")
-        table.add_column("preview")
-        table.add_column("lsp")
+
+        stage_columns = _enabled_stage_columns(summary)
+        for _, label, _ in stage_columns:
+            table.add_column(label)
 
         for result in summary.results:
-            table.add_row(
-                self._format_path(result.path),
-                _column_text(
-                    result.yamllint,
-                    status=result.stage_status(StageName.YAMLLINT, enabled=summary.include_lint),
-                ),
-                _column_text(
-                    result.schema,
-                    status=result.stage_status(StageName.SCHEMA, enabled=summary.include_schema),
-                ),
-                _column_text(
-                    result.preview,
-                    status=result.stage_status(StageName.PREVIEW, enabled=summary.include_preview),
-                ),
-                _column_text(
-                    result.lsp,
-                    status=result.stage_status(StageName.LSP, enabled=summary.include_lsp),
-                ),
-            )
+            row: list[Text | str] = [self._format_path(result.path)]
+            for stage_name, _, enabled in stage_columns:
+                findings = _stage_findings(result, stage_name)
+                row.append(
+                    _column_text(
+                        findings,
+                        status=result.stage_status(stage_name, enabled=enabled),
+                    )
+                )
+            table.add_row(*row)
 
         self._console.print(table)
         status_style = "bold green" if summary.success else "bold red"
@@ -154,7 +145,51 @@ class Reporter:
         json_report = self.as_json(summary)
         for file_payload in json_report["files"]:
             yield {"type": "file", **file_payload}
+        for result in sorted(summary.results, key=lambda item: self._format_path(item.path)):
+            yield from self._diagnostic_records(result, summary)
         yield {"type": "summary", **json_report["summary"]}
+
+    def _diagnostic_records(
+        self, result: FileValidationResult, summary: ValidationSummary
+    ) -> Iterator[dict[str, object]]:
+        """Yield per-diagnostic NDJSON records for one file.
+
+        Args:
+            result: Validation result for a file.
+            summary: Aggregate summary containing enabled stage configuration.
+
+        Yields:
+            One JSON-serializable dictionary per diagnostic.
+        """
+        stage_flags = {
+            StageName.YAMLLINT: summary.include_lint,
+            StageName.SCHEMA: summary.include_schema,
+            StageName.PREVIEW: summary.include_preview,
+            StageName.LSP: summary.include_lsp,
+        }
+        for stage_name, enabled in stage_flags.items():
+            if not enabled:
+                continue
+            for finding in _stage_findings(result, stage_name):
+                record: dict[str, object] = {
+                    "type": "diagnostic",
+                    "path": self._format_path(result.path),
+                    "stage": stage_name.value,
+                    "message": finding.message,
+                }
+                if hasattr(finding, "line"):
+                    record["line"] = finding.line
+                if hasattr(finding, "column"):
+                    record["column"] = finding.column
+                if hasattr(finding, "level"):
+                    record["level"] = finding.level
+                if hasattr(finding, "severity"):
+                    record["severity"] = finding.severity
+                if hasattr(finding, "code") and finding.code is not None:
+                    record["code"] = finding.code
+                if hasattr(finding, "json_pointer"):
+                    record["json_pointer"] = finding.json_pointer
+                yield record
 
     def _format_path(self, path: Path) -> str:
         try:
@@ -192,3 +227,34 @@ def _stage_payload(findings: Sequence[object], *, status: StageStatus) -> dict[s
     if findings:
         payload["first_message"] = _first_message(findings)
     return payload
+
+
+def _enabled_stage_columns(summary: ValidationSummary) -> list[tuple[StageName, str, bool]]:
+    """Return enabled stage columns for text table rendering.
+
+    Args:
+        summary: Validation summary containing stage include flags.
+
+    Returns:
+        A list of ``(stage_name, label, enabled)`` for stages shown in text output.
+    """
+    columns: list[tuple[StageName, str, bool]] = []
+    if summary.include_lint:
+        columns.append((StageName.YAMLLINT, "yamllint", True))
+    if summary.include_schema:
+        columns.append((StageName.SCHEMA, "schema", True))
+    if summary.include_preview:
+        columns.append((StageName.PREVIEW, "preview", True))
+    if summary.include_lsp:
+        columns.append((StageName.LSP, "lsp", True))
+    return columns
+
+
+def _stage_findings(result: FileValidationResult, stage: StageName) -> Sequence[object]:
+    """Return findings for a specific stage on a file result."""
+    return {
+        StageName.YAMLLINT: result.yamllint,
+        StageName.SCHEMA: result.schema,
+        StageName.PREVIEW: result.preview,
+        StageName.LSP: result.lsp,
+    }[stage]

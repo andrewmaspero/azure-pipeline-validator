@@ -74,7 +74,7 @@ uvx azure-pipeline-validator validate --help
 
 | Name | Required | Default | Format | Description |
 | --- | --- | --- | --- | --- |
-| `AZDO_ORG` | yes (preview) | - | URL | Azure DevOps org URL, for example `https://dev.azure.com/contoso`. |
+| `AZDO_ORG` | yes (preview) | - | URL or slug | Azure DevOps org URL or slug, for example `https://dev.azure.com/contoso` or `contoso`. |
 | `AZDO_PROJECT` | yes (preview) | - | string | Project name that owns the pipeline definition. |
 | `AZDO_PIPELINE_ID` | yes (preview) | - | integer | Existing pipeline ID used for preview expansion. |
 | `AZDO_PAT` | yes (preview, unless CI token) | - | string | PAT with Build Read and Execute permissions, or `SYSTEM_ACCESSTOKEN` in CI. |

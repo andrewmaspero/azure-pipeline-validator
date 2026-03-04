@@ -73,7 +73,10 @@ AzureOrgOption = Annotated[
         metavar="URL",
         show_default=False,
         rich_help_panel="Azure connection",
-        help="Organization URL (overrides AZDO_ORG).",
+        help=(
+            "Organization URL or slug (overrides AZDO_ORG), for example "
+            "'https://dev.azure.com/contoso' or 'contoso'."
+        ),
     ),
 ]
 
@@ -281,7 +284,7 @@ def validate(
     Args:
         target: File or directory to validate.
         repo_root: Optional repository root used to resolve template references.
-        azdo_org: Optional Azure DevOps organization URL.
+        azdo_org: Optional Azure DevOps organization URL or slug.
         azdo_project: Optional Azure DevOps project name.
         azdo_pipeline_id: Optional Azure DevOps pipeline ID.
         azdo_pat: Optional PAT or OAuth token override.

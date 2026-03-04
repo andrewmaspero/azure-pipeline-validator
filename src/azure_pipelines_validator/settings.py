@@ -10,6 +10,9 @@ from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
 
 from .exceptions import SettingsError
 
+AZURE_TIMEOUT_DEFAULT: Final[float] = 30.0
+AZURE_DEVOPS_ORG_BASE_URL: Final[str] = "https://dev.azure.com"
+
 
 class Settings(BaseModel):
     """Strongly typed configuration sourced from environment variables."""
@@ -78,9 +81,10 @@ class Settings(BaseModel):
                 "Set AZDO_PAT (or SYSTEM_ACCESSTOKEN) before running preview/schema validation."
             )
 
-        org_value = organization or os.getenv("AZDO_ORG")
-        if not org_value:
+        org_raw_value = organization or os.getenv("AZDO_ORG")
+        if not org_raw_value:
             raise SettingsError("Environment variable AZDO_ORG is required")
+        org_value = normalize_organization(org_raw_value)
 
         project_value = project or os.getenv("AZDO_PROJECT")
         if not project_value:
@@ -115,4 +119,9 @@ class Settings(BaseModel):
         )
 
 
-AZURE_TIMEOUT_DEFAULT: Final[float] = 30.0
+def normalize_organization(organization: str) -> str:
+    """Normalize Azure DevOps organization input into a full URL."""
+    trimmed = organization.strip().strip("/")
+    if "://" in trimmed:
+        return trimmed
+    return f"{AZURE_DEVOPS_ORG_BASE_URL}/{trimmed}"

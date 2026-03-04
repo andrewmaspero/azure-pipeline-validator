@@ -27,6 +27,17 @@ def test_from_environment_reads_values(monkeypatch, tmp_path: Path) -> None:
     assert settings.request_timeout_seconds == 12.5
 
 
+def test_from_environment_normalizes_org_slug(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AZDO_ORG", "AFCADevOp")
+    monkeypatch.setenv("AZDO_PROJECT", "project")
+    monkeypatch.setenv("AZDO_PIPELINE_ID", "99")
+    monkeypatch.setenv("AZDO_PAT", "abc123")
+
+    settings = Settings.from_environment(repo_root=tmp_path)
+
+    assert str(settings.organization) == "https://dev.azure.com/AFCADevOp"
+
+
 def test_from_environment_prefers_system_access_token(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AZDO_ORG", "https://dev.azure.com/org")
     monkeypatch.setenv("AZDO_PROJECT", "project")
@@ -61,6 +72,23 @@ def test_from_environment_allows_overrides(tmp_path: Path, monkeypatch) -> None:
     assert settings.personal_access_token.get_secret_value() == "inline-pat"
     assert settings.ref_name == "refs/heads/feature"
     assert settings.request_timeout_seconds == 45
+
+
+def test_from_environment_normalizes_slug_override(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AZDO_ORG", raising=False)
+    monkeypatch.delenv("AZDO_PROJECT", raising=False)
+    monkeypatch.delenv("AZDO_PIPELINE_ID", raising=False)
+    monkeypatch.delenv("AZDO_PAT", raising=False)
+
+    settings = Settings.from_environment(
+        repo_root=tmp_path,
+        organization="AFCADevOp",
+        project="inline-project",
+        pipeline_id=123,
+        personal_access_token="inline-pat",
+    )
+
+    assert str(settings.organization) == "https://dev.azure.com/AFCADevOp"
 
 
 def test_missing_variables_raise_settings_error(monkeypatch, tmp_path: Path) -> None:

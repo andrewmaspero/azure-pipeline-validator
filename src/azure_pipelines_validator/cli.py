@@ -8,7 +8,7 @@ import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Annotated, Literal, Sequence
+from typing import Annotated, Literal, Mapping, Sequence
 
 import typer
 from rich.console import Console
@@ -1083,7 +1083,7 @@ def _discover_pipeline_yaml_path_with_az(*, settings: Settings) -> str | None:
     Returns:
         Pipeline configuration path from Azure DevOps when available.
     """
-    command = [
+    show_command = [
         "az",
         "pipelines",
         "show",
@@ -1096,9 +1096,47 @@ def _discover_pipeline_yaml_path_with_az(*, settings: Settings) -> str | None:
         "--output",
         "json",
     ]
+    show_payload = _run_az_json(show_command)
+    discovered = _extract_pipeline_yaml_path(show_payload)
+    if discovered:
+        return discovered
+
+    # Some projects surface YAML path only through the legacy build definition
+    # payload (`process.yamlFilename`), so keep this as a CLI fallback.
+    fallback_command = [
+        "az",
+        "devops",
+        "invoke",
+        "--area",
+        "build",
+        "--resource",
+        "definitions",
+        "--route-parameters",
+        f"project={settings.project}",
+        f"definitionId={settings.pipeline_id}",
+        "--api-version",
+        "7.1",
+        "--org",
+        str(settings.organization),
+        "--output",
+        "json",
+    ]
+    fallback_payload = _run_az_json(fallback_command)
+    return _extract_pipeline_yaml_path(fallback_payload)
+
+
+def _run_az_json(command: Sequence[str]) -> Mapping[str, object] | None:
+    """Run an Azure CLI command and parse JSON output when successful.
+
+    Args:
+        command: Azure CLI command sequence.
+
+    Returns:
+        Parsed JSON object payload when available; otherwise ``None``.
+    """
     try:
         result = subprocess.run(
-            command,
+            list(command),
             check=False,
             capture_output=True,
             text=True,
@@ -1111,16 +1149,40 @@ def _discover_pipeline_yaml_path_with_az(*, settings: Settings) -> str | None:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
-    if not isinstance(payload, dict):
+    if isinstance(payload, Mapping):
+        return payload
+    return None
+
+
+def _extract_pipeline_yaml_path(payload: Mapping[str, object] | None) -> str | None:
+    """Extract a pipeline YAML path from CLI payload variants.
+
+    Args:
+        payload: Parsed CLI JSON payload.
+
+    Returns:
+        Normalized YAML path when present.
+    """
+    if payload is None:
         return None
+
+    candidates: list[object] = []
     configuration = payload.get("configuration")
-    if not isinstance(configuration, dict):
-        return None
-    path_value = configuration.get("path")
-    if not isinstance(path_value, str):
-        return None
-    normalized = path_value.strip()
-    return normalized or None
+    if isinstance(configuration, Mapping):
+        candidates.append(configuration.get("path"))
+
+    process = payload.get("process")
+    if isinstance(process, Mapping):
+        candidates.extend((process.get("yamlFilename"), process.get("yamlFileName")))
+
+    candidates.extend((payload.get("yamlFilename"), payload.get("yamlFileName")))
+
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            normalized = candidate.strip()
+            if normalized:
+                return normalized
+    return None
 
 
 def _resolve_target_path(*, repo_root: Path, candidate: Path) -> Path:

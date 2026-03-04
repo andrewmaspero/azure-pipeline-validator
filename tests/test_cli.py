@@ -708,3 +708,32 @@ def test_discover_pipeline_yaml_path_with_az_returns_none_on_error(
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: _Completed())
 
     assert cli._discover_pipeline_yaml_path_with_az(settings=settings) is None
+
+
+def test_discover_pipeline_yaml_path_with_az_falls_back_to_build_definition(
+    monkeypatch, tmp_path: Path
+) -> None:
+    settings = make_settings(tmp_path)
+
+    class _Completed:
+        def __init__(self, *, returncode: int, stdout: str) -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+
+    def fake_run(command, *args, **kwargs):
+        command_text = " ".join(command)
+        if "pipelines show" in command_text:
+            return _Completed(returncode=0, stdout='{"id":555,"configuration":null}')
+        if "devops invoke" in command_text:
+            return _Completed(
+                returncode=0,
+                stdout='{"process":{"yamlFilename":"/.azure-pipelines/terraform-apply.yaml"}}',
+            )
+        return _Completed(returncode=1, stdout="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert (
+        cli._discover_pipeline_yaml_path_with_az(settings=settings)
+        == "/.azure-pipelines/terraform-apply.yaml"
+    )

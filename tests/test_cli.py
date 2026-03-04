@@ -27,6 +27,17 @@ def env_vars() -> dict[str, str]:
     }
 
 
+def env_vars_with_org_slug() -> dict[str, str]:
+    return {
+        "AZDO_ORG": "example",
+        "AZDO_PROJECT": "demo",
+        "AZDO_PIPELINE_ID": "9",
+        "AZDO_PAT": "token",
+        "AZDO_REFNAME": "refs/heads/main",
+        "AZDO_TIMEOUT_SECONDS": "5",
+    }
+
+
 def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "pipeline.yml"
     target.write_text("trigger: none\n", encoding="utf-8")
@@ -52,6 +63,37 @@ def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
         cli.app,
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
+    )
+
+    assert result.exit_code == 0
+    assert "Validated" in result.stdout
+
+
+def test_cli_happy_path_with_org_slug(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("trigger: none\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "download_schema",
+        lambda self: '{"type": "object"}',
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.AzureDevOpsClient,
+        "preview",
+        lambda self, override: PreviewResponse(
+            final_yaml=override,
+            validation_results=(),
+            continuation_token=None,
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
+        env=env_vars_with_org_slug(),
     )
 
     assert result.exit_code == 0

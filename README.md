@@ -78,7 +78,7 @@ uvx azure-pipeline-validator validate --help
 | `AZDO_PROJECT` | no (auto) | - | string | Project name that owns the pipeline definition. |
 | `AZDO_PIPELINE_ID` | no (auto) | - | integer | Existing pipeline ID used for preview expansion. |
 | `AZDO_PAT` | no (auto) | - | string | PAT with Build Read and Execute permissions, or `SYSTEM_ACCESSTOKEN` in CI. |
-| `AZDO_REFNAME` | no | `refs/heads/main` | string | Git ref used while expanding templates during preview. |
+| `AZDO_REFNAME` | no | current branch (`refs/heads/<branch>`) | string | Git ref used while expanding templates during preview. |
 | `AZDO_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for Azure preview API calls. |
 | `AZP_VALIDATOR_REMOTE_NAME` | no | `origin` | string | Git remote used for Azure URL detection. |
 | `AZP_VALIDATOR_AUTO_CONTEXT` | no | `1` | boolean | Enables automatic org/project/pipeline resolution. |
@@ -105,6 +105,8 @@ Notes:
 - If `node` is not present on `PATH`, the CLI auto-downloads a compatible Node runtime into the user cache.
 - `yamllint` and `schema` are advisory by default and disabled until explicitly enabled.
 - If both authoritative stages are disabled while `--gate-mode authoritative` is requested, gating falls back to `all` with a warning.
+- Remote auto-detection is branch-aware: it prefers the current branch upstream remote, then other remotes, and picks the first Azure DevOps-compatible URL.
+- Preview ref defaults to the current branch unless `--azdo-ref-name` or `AZDO_REFNAME` is set.
 
 <a id="cli-reference"></a>
 ## ![CLI](https://img.shields.io/badge/CLI-Reference-0284C7?style=for-the-badge&logo=gnubash&logoColor=white)
@@ -164,6 +166,14 @@ uv run azure-pipeline-validator auth status --format json
 uv run azure-pipeline-validator context pipelines
 ```
 
+`uvx` with local source during development:
+
+```bash
+uvx --from azure-pipeline-validator \
+  --with-editable /absolute/path/to/azure-pipeline-validator \
+  azure-pipeline-validator validate .azure-pipelines
+```
+
 ### Hidden directories
 
 Default hidden discovery mode is `common`, which auto-discovers Azure DevOps-oriented hidden directories such as
@@ -190,18 +200,25 @@ uv run azure-pipeline-validator validate .devops/ --repo-root $(pwd)
 
 - `text` (default): rounded table with per-stage status (`pass`, `skip`, `error`, or first finding).
 - `json`: one stable payload containing `schema_version`, `summary`, and `files`.
-- `ndjson`: one record per file plus one summary record.
+- `ndjson`: one record per file, one record per diagnostic (`type=diagnostic`), plus one summary record.
 
 Example text output:
 
 ```text
-╭──────────────────────┬──────────┬────────┬──────────────────────┬──────────────────────╮
-│ File                 │ yamllint │ schema │ preview              │ lsp                  │
-├──────────────────────┼──────────┼────────┼──────────────────────┼──────────────────────┤
-│ workflows/ci.yml     │ pass     │ skip   │ pass                 │ pass                 │
-│ workflows/deploy.yml │ skip     │ skip   │ pass                 │ L12 C9: pattern ...  │
-╰──────────────────────┴──────────┴────────┴──────────────────────┴──────────────────────╯
+╭──────────────────────┬──────────────────────┬──────────────────────╮
+│ File                 │ preview              │ lsp                  │
+├──────────────────────┼──────────────────────┼──────────────────────┤
+│ workflows/ci.yml     │ pass                 │ pass                 │
+│ workflows/deploy.yml │ pass                 │ L12 C9: pattern ...  │
+╰──────────────────────┴──────────────────────┴──────────────────────╯
 Validated 2 file(s). Blocking failures: 1. Advisory-only files: 0. Gate mode: authoritative.
+```
+
+Example NDJSON diagnostic filtering:
+
+```bash
+uv run azure-pipeline-validator validate --output-format ndjson . \
+  | jq -c 'select(.type=="diagnostic")'
 ```
 
 <a id="ci-cd"></a>
@@ -286,6 +303,9 @@ uvx --from pydocstyle pydocstyle --convention=google src
 - Symptom: preview failures in CI.
   - Cause: missing Azure credentials or insufficient PAT scope.
   - Action: ensure `AZDO_*` values are present and token has Build Read and Execute permissions.
+- Symptom: `auth status` shows keyring unavailable or `set-pat` fails.
+  - Cause: no usable OS keyring backend in the current runtime.
+  - Action: run `azure-pipeline-validator auth status` and check `keyring_backend_detail`; on macOS it should report `keyring.backends.macOS.Keyring`.
 
 <a id="license"></a>
 ## ![License](https://img.shields.io/badge/License-MIT-1D4ED8?style=for-the-badge&logo=open-source-initiative&logoColor=white)

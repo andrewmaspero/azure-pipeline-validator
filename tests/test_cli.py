@@ -38,6 +38,16 @@ def env_vars_with_org_slug() -> dict[str, str]:
     }
 
 
+def invoke_validate(args: list[str], *, env: dict[str, str], catch_exceptions: bool = True):
+    """Invoke the validate command with shared test defaults."""
+    return runner.invoke(
+        cli.app,
+        ["validate", *args],
+        env=env,
+        catch_exceptions=catch_exceptions,
+    )
+
+
 def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "pipeline.yml"
     target.write_text("trigger: none\n", encoding="utf-8")
@@ -59,8 +69,7 @@ def test_cli_happy_path(monkeypatch, tmp_path: Path) -> None:
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
     )
@@ -90,8 +99,7 @@ def test_cli_happy_path_with_org_slug(monkeypatch, tmp_path: Path) -> None:
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars_with_org_slug(),
     )
@@ -121,8 +129,7 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -149,14 +156,10 @@ def test_cli_accepts_inline_overrides(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_cli_reports_settings_error(tmp_path: Path) -> None:
-    result = runner.invoke(
-        cli.app,
-        [str(tmp_path)],
-        env={},
-    )
+    result = invoke_validate([str(tmp_path)], env={})
 
     assert result.exit_code == 2
-    assert "Set AZDO_PAT" in result.stdout
+    assert "Unable to resolve Azure organization/project" in result.stdout
 
 
 def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
@@ -174,8 +177,7 @@ def test_cli_handles_azure_devops_error(monkeypatch, tmp_path: Path) -> None:
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
         catch_exceptions=False,
@@ -189,8 +191,7 @@ def test_cli_yamllint_only_runs_without_env(monkeypatch, tmp_path: Path) -> None
     target = tmp_path / "pipeline.yml"
     target.write_text("trigger: none\n", encoding="utf-8")
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -227,8 +228,7 @@ def test_cli_json_output_format(monkeypatch, tmp_path: Path) -> None:
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -267,8 +267,7 @@ def test_cli_ndjson_output_format(monkeypatch, tmp_path: Path) -> None:
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -312,8 +311,7 @@ def test_cli_default_authoritative_gate_ignores_yamllint_only_failures(
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -349,8 +347,7 @@ def test_cli_gate_mode_all_blocks_on_yamllint_failures(monkeypatch, tmp_path: Pa
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -388,8 +385,7 @@ def test_cli_run_schema_emits_deprecation_warning(monkeypatch, tmp_path: Path) -
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp", "--run-schema"],
         env=env_vars(),
     )
@@ -419,8 +415,7 @@ def test_cli_json_summary_includes_warnings(monkeypatch, tmp_path: Path) -> None
         raising=False,
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [
             str(tmp_path),
             "--repo-root",
@@ -450,8 +445,7 @@ def test_cli_reports_lsp_initialization_error(monkeypatch, tmp_path: Path) -> No
 
     monkeypatch.setattr(cli, "LspValidator", RaisingLspValidator)
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-schema", "--skip-preview"],
         env={},
     )
@@ -463,7 +457,7 @@ def test_cli_reports_lsp_initialization_error(monkeypatch, tmp_path: Path) -> No
 def test_cli_rejects_legacy_vscode_flags(tmp_path: Path) -> None:
     result = runner.invoke(
         cli.app,
-        [str(tmp_path), "--skip-vscode"],
+        ["validate", str(tmp_path), "--skip-vscode"],
         env=env_vars(),
     )
 
@@ -487,8 +481,7 @@ def test_cli_handles_schema_unavailable_error(monkeypatch, tmp_path: Path) -> No
         lambda self, target, options: (_ for _ in ()).throw(SchemaUnavailableError("schema boom")),
     )
 
-    result = runner.invoke(
-        cli.app,
+    result = invoke_validate(
         [str(tmp_path), "--repo-root", str(tmp_path), "--skip-lsp"],
         env=env_vars(),
     )
@@ -520,7 +513,7 @@ def run_hidden_mode_test(
     if hidden_mode is not None:
         args.extend(["--hidden-mode", hidden_mode])
 
-    result = runner.invoke(cli.app, args, env={})
+    result = invoke_validate(args, env={})
 
     assert result.exit_code == 0
     assert expected_substring in result.stdout
@@ -551,3 +544,49 @@ def test_cli_hidden_mode_all_includes_non_common_hidden_directory(tmp_path: Path
         hidden_mode="all",
         expected_substring=".customhidden/ci.yml",
     )
+
+
+def test_auth_status_json(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "is_keyring_backend_available", lambda: True)
+    monkeypatch.setattr(cli, "read_default_org", lambda: "acme")
+    monkeypatch.setattr(cli, "read_pat", lambda org: "token")
+    monkeypatch.setattr(cli, "resolve_org", lambda org=None: "acme")
+    monkeypatch.setattr(
+        cli,
+        "resolve_token",
+        lambda explicit_token, org_hint: type(
+            "_Token",
+            (),
+            {"source": cli.TokenSource.AZ_CLI},
+        )(),
+    )
+
+    result = runner.invoke(cli.app, ["auth", "status", "--format", "json"], env={})
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["resolved_org"] == "acme"
+    assert payload["pat_present_for_org"] is True
+
+
+def test_context_detect_json(monkeypatch, tmp_path: Path) -> None:
+    class _Remote:
+        org = "acme"
+        project = "demo"
+        repo = "repo"
+
+    class _GitContext:
+        remote_name = "origin"
+        remote_url = "https://dev.azure.com/acme/demo/_git/repo"
+        remote = _Remote()
+        current_branch = "main"
+        repo_root = tmp_path
+
+    monkeypatch.setattr(cli, "detect_git_context", lambda remote_name: _GitContext())
+    monkeypatch.setattr(cli, "resolve_org", lambda: "acme")
+
+    result = runner.invoke(cli.app, ["context", "detect", "--format", "json"], env={})
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["organization"] == "acme"
+    assert payload["project"] == "demo"
+    assert payload["repository"] == "repo"

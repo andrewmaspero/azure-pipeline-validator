@@ -74,12 +74,18 @@ uvx azure-pipeline-validator validate --help
 
 | Name | Required | Default | Format | Description |
 | --- | --- | --- | --- | --- |
-| `AZDO_ORG` | yes (preview) | - | URL or slug | Azure DevOps org URL or slug, for example `https://dev.azure.com/contoso` or `contoso`. |
-| `AZDO_PROJECT` | yes (preview) | - | string | Project name that owns the pipeline definition. |
-| `AZDO_PIPELINE_ID` | yes (preview) | - | integer | Existing pipeline ID used for preview expansion. |
-| `AZDO_PAT` | yes (preview, unless CI token) | - | string | PAT with Build Read and Execute permissions, or `SYSTEM_ACCESSTOKEN` in CI. |
+| `AZDO_ORG` | no (auto) | - | URL or slug | Azure DevOps org URL or slug, for example `https://dev.azure.com/contoso` or `contoso`. |
+| `AZDO_PROJECT` | no (auto) | - | string | Project name that owns the pipeline definition. |
+| `AZDO_PIPELINE_ID` | no (auto) | - | integer | Existing pipeline ID used for preview expansion. |
+| `AZDO_PAT` | no (auto) | - | string | PAT with Build Read and Execute permissions, or `SYSTEM_ACCESSTOKEN` in CI. |
 | `AZDO_REFNAME` | no | `refs/heads/main` | string | Git ref used while expanding templates during preview. |
 | `AZDO_TIMEOUT_SECONDS` | no | `30` | integer | Timeout for Azure preview API calls. |
+| `AZP_VALIDATOR_REMOTE_NAME` | no | `origin` | string | Git remote used for Azure URL detection. |
+| `AZP_VALIDATOR_AUTO_CONTEXT` | no | `1` | boolean | Enables automatic org/project/pipeline resolution. |
+| `AZP_VALIDATOR_PROMPT` | no | `1` (TTY) | boolean | Enables local interactive selection for ambiguous pipeline matches. |
+| `AZP_VALIDATOR_PIPELINE_NAME` | no | - | string | Optional pipeline name hint for auto-resolution. |
+| `AZP_VALIDATOR_CONTEXT_CACHE_DIR` | no | `~/.azure-pipeline-validator/context` | path | Cache directory for repository-scoped pipeline selections. |
+| `AZP_VALIDATOR_CONTEXT_CACHE_TTL_SECONDS` | no | `300` | integer | TTL for cached pipeline selections. |
 
 ### ![Azure LSP Assets](https://img.shields.io/badge/Azure%20LSP-assets%20and%20cache-007ACC?style=for-the-badge&logo=azuredevops&logoColor=white)
 
@@ -104,6 +110,17 @@ Notes:
 ## ![CLI](https://img.shields.io/badge/CLI-Reference-0284C7?style=for-the-badge&logo=gnubash&logoColor=white)
 
 ```text
+Usage: azure-pipeline-validator [COMMAND] [OPTIONS]
+
+Commands:
+  validate  Run authoritative Azure validation by default (preview + lsp), with optional advisory yamllint/schema stages.
+  auth      Manage local keychain-backed Azure authentication defaults.
+  context   Inspect detected Azure DevOps context and pipeline candidates.
+```
+
+`validate` options (excerpt):
+
+```text
 Usage: azure-pipeline-validator validate [OPTIONS] [PATH]
 
 Run authoritative Azure validation by default (preview + lsp), with optional advisory yamllint/schema stages.
@@ -113,6 +130,11 @@ Arguments:
 
 Options:
   --repo-root PATH                     Base path used when resolving template references (defaults to CWD).
+  --remote-name NAME                   Git remote used for Azure DevOps URL inference.  [default: origin]
+  --auto-context / --no-auto-context   Enable or disable Azure context auto-detection.
+  --prompt / --no-prompt               Allow interactive pipeline selection when multiple candidates match.
+  --pipeline-name NAME                 Optional pipeline name hint for auto-resolution.
+  --pipeline-id-cache-ttl-seconds SECONDS  Cache TTL for repository-scoped pipeline selections.  [default: 300]
   --run-yamllint / --skip-yamllint     Enable or disable optional advisory yamllint checks.  [default: skip-yamllint]
   --run-schema / --skip-schema         Enable or disable deprecated advisory schema checks.  [default: skip-schema]
   --run-preview / --skip-preview       Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.
@@ -125,6 +147,21 @@ Options:
   --hidden-mode MODE                   Hidden directory discovery: common|all|none.  [default: common]
   --fail-fast / --no-fail-fast         Stop immediately after the first file that fails validation.
   --help                               Show this message and exit.
+```
+
+Auth/context command examples:
+
+```bash
+# Store org and PAT once, then run validate with auto-context
+uv run azure-pipeline-validator auth set-org --org AFCADevOp
+uv run azure-pipeline-validator auth set-pat --org AFCADevOp
+
+# Show current context detection and auth status
+uv run azure-pipeline-validator context detect --format json
+uv run azure-pipeline-validator auth status --format json
+
+# List candidate pipelines for current repo context
+uv run azure-pipeline-validator context pipelines
 ```
 
 ### Hidden directories

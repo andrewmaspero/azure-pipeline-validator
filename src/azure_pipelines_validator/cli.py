@@ -2,23 +2,51 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Sequence
 
 import typer
 from rich.console import Console
 
+from .auth_chain import TokenSource, resolve_token
 from .azure_devops import AzureDevOpsClient
+from .context_detection import DetectionSource, detect_git_context
 from .exceptions import (
+    AuthResolutionError,
     AzureDevOpsError,
+    ContextResolutionError,
     LspValidationError,
     SchemaUnavailableError,
     SettingsError,
 )
 from .file_scanner import FileScanner
+from .keyring_store import (
+    clear_default_org,
+    clear_pat,
+    is_keyring_backend_available,
+    read_default_org,
+    read_pat,
+    resolve_org,
+    store_default_org,
+    store_pat,
+)
 from .lsp_engine import LspValidator
-from .models import GateMode, ValidationOptions
+from .models import (
+    AuthStatusResult,
+    ContextDetectResult,
+    GateMode,
+    ValidationOptions,
+    ValidationSummary,
+)
+from .pipeline_resolution import (
+    DEFAULT_CACHE_TTL_SECONDS,
+    load_cached_pipeline_id,
+    save_cached_pipeline_id,
+    select_pipeline_candidates,
+)
 from .reporter import Reporter
 from .schema_engine import SchemaValidator
 from .service import ValidationService
@@ -37,6 +65,18 @@ app = typer.Typer(
         "yamllint/schema checks."
     ),
 )
+auth_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Manage local keychain-backed Azure authentication defaults.",
+)
+context_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Inspect detected Azure DevOps context and pipeline candidates.",
+)
+app.add_typer(auth_app, name="auth")
+app.add_typer(context_app, name="context")
 
 
 TargetArg = Annotated[
@@ -210,6 +250,57 @@ HiddenModeOption = Annotated[
     ),
 ]
 
+RemoteNameOption = Annotated[
+    str,
+    typer.Option(
+        "--remote-name",
+        metavar="NAME",
+        show_default=True,
+        rich_help_panel="Context",
+        help="Git remote used for Azure DevOps URL inference.",
+    ),
+]
+
+AutoContextOption = Annotated[
+    bool,
+    typer.Option(
+        "--auto-context / --no-auto-context",
+        rich_help_panel="Context",
+        help="Enable or disable Azure context auto-detection.",
+    ),
+]
+
+PromptOption = Annotated[
+    bool,
+    typer.Option(
+        "--prompt / --no-prompt",
+        rich_help_panel="Context",
+        help="Allow interactive pipeline selection when multiple candidates match.",
+    ),
+]
+
+PipelineNameOption = Annotated[
+    str | None,
+    typer.Option(
+        "--pipeline-name",
+        metavar="NAME",
+        show_default=False,
+        rich_help_panel="Context",
+        help="Optional pipeline name hint for auto-resolution.",
+    ),
+]
+
+PipelineCacheTtlOption = Annotated[
+    int,
+    typer.Option(
+        "--pipeline-id-cache-ttl-seconds",
+        metavar="SECONDS",
+        show_default=True,
+        rich_help_panel="Context",
+        help="Cache TTL for repository-scoped pipeline selections.",
+    ),
+]
+
 
 @app.command(
     help=(
@@ -232,6 +323,11 @@ def validate(
     output_format: OutputFormatOption = "text",
     gate_mode: GateModeOption = "authoritative",
     hidden_mode: HiddenModeOption = "common",
+    remote_name: RemoteNameOption = "origin",
+    auto_context: AutoContextOption = True,
+    prompt: PromptOption = True,
+    pipeline_name: PipelineNameOption = None,
+    pipeline_id_cache_ttl_seconds: PipelineCacheTtlOption = DEFAULT_CACHE_TTL_SECONDS,
     run_yamllint: Annotated[
         bool,
         typer.Option(
@@ -296,6 +392,11 @@ def validate(
         output_format: Reporter output format.
         gate_mode: Gate mode used to determine blocking behavior.
         hidden_mode: Hidden directory discovery mode.
+        remote_name: Git remote used for Azure DevOps inference.
+        auto_context: Enables auto-resolution for Azure context.
+        prompt: Enables interactive local candidate selection.
+        pipeline_name: Optional pipeline name hint.
+        pipeline_id_cache_ttl_seconds: Cache TTL for selected pipeline IDs.
         run_yamllint: Enable advisory yamllint checks.
         run_schema: Enable advisory schema checks.
         run_preview: Enable preview validation against Azure DevOps.
@@ -314,20 +415,40 @@ def validate(
     console = Console()
     effective_repo_root = (repo_root or Path.cwd()).resolve()
     requires_azure = run_schema or run_preview
+    warnings: list[str] = []
+    effective_remote_name = (
+        os.getenv("AZP_VALIDATOR_REMOTE_NAME", remote_name).strip() or remote_name
+    )
+    effective_auto_context = _resolve_bool_env("AZP_VALIDATOR_AUTO_CONTEXT", auto_context)
+    effective_prompt = _resolve_bool_env("AZP_VALIDATOR_PROMPT", prompt)
+    effective_pipeline_name = pipeline_name or os.getenv("AZP_VALIDATOR_PIPELINE_NAME")
+    effective_cache_ttl = int(
+        os.getenv(
+            "AZP_VALIDATOR_CONTEXT_CACHE_TTL_SECONDS",
+            str(max(pipeline_id_cache_ttl_seconds, 1)),
+        )
+    )
 
     settings = None
     if requires_azure:
         try:
-            settings = Settings.from_environment(
+            settings, resolve_warnings = _resolve_settings(
                 repo_root=effective_repo_root,
-                organization=azdo_org,
-                project=azdo_project,
-                pipeline_id=azdo_pipeline_id,
-                personal_access_token=azdo_pat,
-                ref_name=azdo_ref_name,
-                timeout_seconds=azdo_timeout_seconds,
+                azdo_org=azdo_org,
+                azdo_project=azdo_project,
+                azdo_pipeline_id=azdo_pipeline_id,
+                azdo_pat=azdo_pat,
+                azdo_ref_name=azdo_ref_name,
+                azdo_timeout_seconds=azdo_timeout_seconds,
+                remote_name=effective_remote_name,
+                auto_context=effective_auto_context,
+                prompt=effective_prompt,
+                pipeline_name=effective_pipeline_name,
+                pipeline_cache_ttl_seconds=effective_cache_ttl,
+                console=console,
             )
-        except SettingsError as error:
+            warnings.extend(resolve_warnings)
+        except (SettingsError, ContextResolutionError, AuthResolutionError) as error:
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=2) from error
 
@@ -379,7 +500,443 @@ def validate(
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=1) from error
 
+    summary = _attach_warnings(summary, warnings)
     reporter = Reporter(repo_root=effective_repo_root, console=console)
     reporter.display(summary, output_format=output_format)
     if not summary.success:
         raise typer.Exit(code=1)
+
+
+@auth_app.command("set-pat", help="Store a PAT in OS keychain for an organization.")
+def auth_set_pat(
+    org: Annotated[
+        str | None,
+        typer.Option("--org", metavar="ORG", show_default=False, help="Organization slug or URL."),
+    ] = None,
+    token: Annotated[
+        str | None,
+        typer.Option("--token", metavar="PAT", show_default=False, help="PAT value to store."),
+    ] = None,
+) -> None:
+    """Persist a PAT in keychain storage."""
+    resolved_org = resolve_org(org)
+    if not resolved_org:
+        raise typer.Exit(code=2)
+    resolved_token = token or typer.prompt("Azure DevOps PAT", hide_input=True).strip()
+    if not resolved_token:
+        raise typer.Exit(code=2)
+    try:
+        store_pat(token=resolved_token, org=resolved_org)
+    except RuntimeError as error:
+        raise typer.Exit(code=1) from error
+    typer.echo(f"Stored PAT for org '{resolved_org}'.")
+
+
+@auth_app.command("clear-pat", help="Delete a keychain PAT for an organization.")
+def auth_clear_pat(
+    org: Annotated[
+        str | None,
+        typer.Option("--org", metavar="ORG", show_default=False, help="Organization slug or URL."),
+    ] = None,
+) -> None:
+    """Delete a stored PAT from keychain storage."""
+    resolved_org = resolve_org(org)
+    if not resolved_org:
+        raise typer.Exit(code=2)
+    removed = clear_pat(org=resolved_org)
+    if removed:
+        typer.echo(f"Deleted PAT for org '{resolved_org}'.")
+    else:
+        typer.echo(f"No PAT found for org '{resolved_org}'.")
+
+
+@auth_app.command("set-org", help="Store a default Azure DevOps organization in keychain.")
+def auth_set_org(
+    org: Annotated[str, typer.Option("--org", metavar="ORG", help="Organization slug or URL.")],
+) -> None:
+    """Persist the default Azure DevOps organization."""
+    try:
+        store_default_org(org)
+    except RuntimeError as error:
+        raise typer.Exit(code=1) from error
+    typer.echo(f"Stored default org '{org}'.")
+
+
+@auth_app.command("clear-org", help="Delete the default Azure DevOps organization.")
+def auth_clear_org() -> None:
+    """Delete the stored default organization."""
+    removed = clear_default_org()
+    if removed:
+        typer.echo("Deleted default org.")
+    else:
+        typer.echo("No default org stored.")
+
+
+@auth_app.command("status", help="Show resolved auth state for local diagnostics.")
+def auth_status(
+    org: Annotated[
+        str | None,
+        typer.Option("--org", metavar="ORG", show_default=False, help="Organization slug or URL."),
+    ] = None,
+    output_format: Annotated[
+        Literal["text", "json"],
+        typer.Option("--format", metavar="FORMAT", show_default=True, help="Output format."),
+    ] = "text",
+) -> None:
+    """Display auth-chain readiness details."""
+    resolved_org = resolve_org(org)
+    resolved_token = resolve_token(explicit_token=None, org_hint=resolved_org)
+    result = AuthStatusResult(
+        resolved_org=resolved_org,
+        keyring_backend_available=is_keyring_backend_available(),
+        default_org_stored=read_default_org(),
+        pat_present_for_org=bool(read_pat(resolved_org)) if resolved_org else False,
+        env_pat_present=any(
+            bool(os.getenv(name, "").strip()) for name in ("AZDO_PAT", "SYSTEM_ACCESSTOKEN", "PAT")
+        ),
+        azure_cli_available=(
+            resolved_token is not None and resolved_token.source == TokenSource.AZ_CLI
+        ),
+    )
+    if output_format == "json":
+        typer.echo(result.model_dump_json())
+        return
+    typer.echo(f"Resolved org: {result.resolved_org or '(none)'}")
+    typer.echo(f"Keyring backend available: {result.keyring_backend_available}")
+    typer.echo(f"Default org stored: {result.default_org_stored or '(none)'}")
+    typer.echo(f"PAT present for org: {result.pat_present_for_org}")
+    typer.echo(f"PAT env present: {result.env_pat_present}")
+    typer.echo(f"Azure CLI fallback available: {result.azure_cli_available}")
+
+
+@context_app.command("detect", help="Detect Azure context from flags/env/git/keychain.")
+def context_detect(
+    remote_name: RemoteNameOption = "origin",
+    output_format: Annotated[
+        Literal["text", "json"],
+        typer.Option("--format", metavar="FORMAT", show_default=True, help="Output format."),
+    ] = "text",
+) -> None:
+    """Display detected Azure context and source metadata."""
+    git_context = detect_git_context(remote_name=remote_name)
+    resolved_org = resolve_org()
+    organization_source = (
+        DetectionSource.GIT_REMOTE.value if git_context.remote else DetectionSource.UNSET.value
+    )
+    project = git_context.remote.project if git_context.remote else None
+    repository = git_context.remote.repo if git_context.remote else None
+    result = ContextDetectResult(
+        organization=resolved_org,
+        project=project,
+        repository=repository,
+        remote_name=git_context.remote_name,
+        remote_url=git_context.remote_url,
+        branch=git_context.current_branch,
+        repo_root=str(git_context.repo_root) if git_context.repo_root else None,
+        organization_source=organization_source,
+        project_source=DetectionSource.GIT_REMOTE.value if project else DetectionSource.UNSET.value,
+        repository_source=DetectionSource.GIT_REMOTE.value
+        if repository
+        else DetectionSource.UNSET.value,
+        pipeline_id=None,
+        pipeline_source=DetectionSource.UNSET.value,
+    )
+    if output_format == "json":
+        typer.echo(result.model_dump_json())
+        return
+    typer.echo(f"Org: {result.organization or '(none)'} [{result.organization_source}]")
+    typer.echo(f"Project: {result.project or '(none)'} [{result.project_source}]")
+    typer.echo(f"Repository: {result.repository or '(none)'} [{result.repository_source}]")
+    typer.echo(f"Remote ({result.remote_name}): {result.remote_url or '(none)'}")
+    typer.echo(f"Branch: {result.branch or '(none)'}")
+    typer.echo(f"Repo root: {result.repo_root or '(none)'}")
+
+
+@context_app.command("pipelines", help="List candidate pipelines for detected or provided context.")
+def context_pipelines(
+    azdo_org: AzureOrgOption = None,
+    azdo_project: AzureProjectOption = None,
+    azdo_pat: AzurePatOption = None,
+    repo: Annotated[
+        str | None,
+        typer.Option("--repo", metavar="NAME", show_default=False, help="Repository name hint."),
+    ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option("--branch", metavar="REF", show_default=False, help="Branch hint."),
+    ] = None,
+    remote_name: RemoteNameOption = "origin",
+) -> None:
+    """List pipeline candidates using repository and optional hints."""
+    del branch  # Reserved for future branch-aware narrowing.
+    git_context = detect_git_context(remote_name=remote_name)
+    remote = git_context.remote
+    resolved_org = azdo_org or os.getenv("AZDO_ORG") or (remote.org if remote else None)
+    resolved_project = (
+        azdo_project or os.getenv("AZDO_PROJECT") or (remote.project if remote else None)
+    )
+    if not resolved_org or not resolved_project:
+        raise typer.Exit(code=2)
+    resolved_token = resolve_token(explicit_token=azdo_pat, org_hint=resolved_org)
+    if resolved_token is None:
+        raise typer.Exit(code=2)
+    settings = Settings.from_resolved_context(
+        organization=resolved_org,
+        project=resolved_project,
+        pipeline_id=1,
+        personal_access_token=resolved_token.value,
+        token_kind=resolved_token.kind.value,
+        repo_root=Path.cwd(),
+        ref_name="refs/heads/main",
+        timeout_seconds=float(os.getenv("AZDO_TIMEOUT_SECONDS", "30")),
+    )
+    client = AzureDevOpsClient(settings)
+    try:
+        repo_name = repo or (remote.repo if remote else "")
+        all_pipelines = client.list_pipelines(project=resolved_project)
+        candidates = select_pipeline_candidates(
+            repo_name=repo_name,
+            name_hint=os.getenv("AZP_VALIDATOR_PIPELINE_NAME"),
+            all_pipelines=all_pipelines,
+        )
+    finally:
+        client.close()
+    for pipeline in candidates:
+        typer.echo(f"{pipeline.id}\t{pipeline.name}")
+
+
+def _resolve_settings(
+    *,
+    repo_root: Path,
+    azdo_org: str | None,
+    azdo_project: str | None,
+    azdo_pipeline_id: int | None,
+    azdo_pat: str | None,
+    azdo_ref_name: str | None,
+    azdo_timeout_seconds: float | None,
+    remote_name: str,
+    auto_context: bool,
+    prompt: bool,
+    pipeline_name: str | None,
+    pipeline_cache_ttl_seconds: int,
+    console: Console,
+) -> tuple[Settings, list[str]]:
+    """Resolve runtime settings with layered auto-detection."""
+    warnings: list[str] = []
+    if not auto_context:
+        return (
+            Settings.from_environment(
+                repo_root=repo_root,
+                organization=azdo_org,
+                project=azdo_project,
+                pipeline_id=azdo_pipeline_id,
+                personal_access_token=azdo_pat,
+                ref_name=azdo_ref_name,
+                timeout_seconds=azdo_timeout_seconds,
+            ),
+            warnings,
+        )
+
+    git_context = detect_git_context(remote_name=remote_name)
+    remote = git_context.remote
+
+    resolved_org, org_source = _resolve_org_value(azdo_org, remote)
+    resolved_project, project_source = _resolve_project_value(azdo_project, remote)
+    if not resolved_org or not resolved_project:
+        raise ContextResolutionError(
+            "Unable to resolve Azure organization/project. Provide --azdo-org and --azdo-project "
+            "or set AZDO_ORG/AZDO_PROJECT."
+        )
+
+    resolved_token = resolve_token(explicit_token=azdo_pat, org_hint=resolved_org)
+    if resolved_token is None:
+        raise AuthResolutionError(
+            "Unable to resolve Azure auth token. Use --azdo-pat, set AZDO_PAT/SYSTEM_ACCESSTOKEN, "
+            "store a keychain PAT (auth set-pat), or sign in with Azure CLI."
+        )
+    warnings.append(f"Using {resolved_token.source.value} token provider.")
+
+    explicit_pipeline = azdo_pipeline_id
+    if explicit_pipeline is None:
+        env_pipeline = os.getenv("AZDO_PIPELINE_ID", "").strip()
+        if env_pipeline:
+            explicit_pipeline = int(env_pipeline)
+    if explicit_pipeline is not None:
+        pipeline_id = int(explicit_pipeline)
+        pipeline_source = (
+            DetectionSource.FLAG if azdo_pipeline_id is not None else DetectionSource.ENV
+        )
+    else:
+        repo_name = remote.repo if remote else ""
+        cached_pipeline = None
+        if repo_name:
+            cached_pipeline = load_cached_pipeline_id(
+                org=resolved_org,
+                project=resolved_project,
+                repo=repo_name,
+                ttl_seconds=max(pipeline_cache_ttl_seconds, 1),
+            )
+        if cached_pipeline is not None:
+            pipeline_id = cached_pipeline
+            pipeline_source = DetectionSource.CACHE
+        else:
+            discovery_settings = Settings.from_resolved_context(
+                organization=resolved_org,
+                project=resolved_project,
+                pipeline_id=1,
+                personal_access_token=resolved_token.value,
+                token_kind=resolved_token.kind.value,
+                repo_root=repo_root,
+                ref_name=azdo_ref_name or os.getenv("AZDO_REFNAME") or "refs/heads/main",
+                timeout_seconds=azdo_timeout_seconds
+                if azdo_timeout_seconds is not None
+                else float(os.getenv("AZDO_TIMEOUT_SECONDS", "30")),
+            )
+            client = AzureDevOpsClient(discovery_settings)
+            try:
+                all_pipelines = client.list_pipelines(project=resolved_project)
+            finally:
+                client.close()
+            candidates = select_pipeline_candidates(
+                repo_name=repo_name,
+                name_hint=pipeline_name or os.getenv("AZP_VALIDATOR_PIPELINE_NAME"),
+                all_pipelines=all_pipelines,
+            )
+            if not candidates:
+                raise ContextResolutionError(
+                    "No pipelines found for the resolved project. Provide --azdo-pipeline-id "
+                    "or run 'azure-pipeline-validator context pipelines'."
+                )
+            if len(candidates) == 1:
+                pipeline_id = candidates[0].id
+                pipeline_source = DetectionSource.GIT_REMOTE
+            else:
+                can_prompt = prompt and _is_interactive_terminal()
+                if can_prompt:
+                    pipeline_id = _prompt_for_pipeline(candidates=candidates, console=console)
+                    pipeline_source = DetectionSource.USER_PROMPT
+                else:
+                    candidate_lines = "\n".join(
+                        f"  - {candidate.id}: {candidate.name}" for candidate in candidates[:20]
+                    )
+                    raise ContextResolutionError(
+                        "Multiple pipeline candidates found. Re-run with --azdo-pipeline-id or "
+                        "use interactive prompt in a TTY.\nCandidates:\n"
+                        f"{candidate_lines}"
+                    )
+            if repo_name:
+                save_cached_pipeline_id(
+                    org=resolved_org,
+                    project=resolved_project,
+                    repo=repo_name,
+                    pipeline_id=pipeline_id,
+                )
+    warnings.append(
+        "Resolved context "
+        f"(org={resolved_org} [{org_source.value}], "
+        f"project={resolved_project} [{project_source.value}], "
+        f"pipeline={pipeline_id} [{pipeline_source.value}])."
+    )
+
+    settings = Settings.from_resolved_context(
+        organization=resolved_org,
+        project=resolved_project,
+        pipeline_id=pipeline_id,
+        personal_access_token=resolved_token.value,
+        token_kind=resolved_token.kind.value,
+        repo_root=repo_root,
+        ref_name=azdo_ref_name or os.getenv("AZDO_REFNAME") or "refs/heads/main",
+        timeout_seconds=azdo_timeout_seconds
+        if azdo_timeout_seconds is not None
+        else float(os.getenv("AZDO_TIMEOUT_SECONDS", "30")),
+    )
+    return settings, warnings
+
+
+def _resolve_org_value(
+    azdo_org: str | None,
+    remote: object | None,
+) -> tuple[str | None, DetectionSource]:
+    """Resolve organization value and source metadata."""
+    if azdo_org and azdo_org.strip():
+        return azdo_org.strip(), DetectionSource.FLAG
+    env_org = os.getenv("AZDO_ORG", "").strip()
+    if env_org:
+        return env_org, DetectionSource.ENV
+    if remote is not None and getattr(remote, "org", None):
+        return str(remote.org), DetectionSource.GIT_REMOTE
+    keyring_org = read_default_org()
+    if keyring_org:
+        return keyring_org, DetectionSource.KEYCHAIN
+    return None, DetectionSource.UNSET
+
+
+def _resolve_project_value(
+    azdo_project: str | None,
+    remote: object | None,
+) -> tuple[str | None, DetectionSource]:
+    """Resolve project value and source metadata."""
+    if azdo_project and azdo_project.strip():
+        return azdo_project.strip(), DetectionSource.FLAG
+    env_project = os.getenv("AZDO_PROJECT", "").strip()
+    if env_project:
+        return env_project, DetectionSource.ENV
+    if remote is not None and getattr(remote, "project", None):
+        return str(remote.project), DetectionSource.GIT_REMOTE
+    return None, DetectionSource.UNSET
+
+
+def _prompt_for_pipeline(*, candidates: Sequence[object], console: Console) -> int:
+    """Prompt user to select a pipeline candidate by index."""
+    console.print("[bold yellow]Multiple pipelines matched. Select one:[/bold yellow]")
+    for index, candidate in enumerate(candidates, start=1):
+        console.print(f"  [{index}] {candidate.id}: {candidate.name}")
+    selection = typer.prompt("Pipeline selection", type=int)
+    if selection < 1 or selection > len(candidates):
+        raise ContextResolutionError("Invalid pipeline selection index.")
+    chosen = candidates[selection - 1]
+    return int(chosen.id)
+
+
+def _is_interactive_terminal() -> bool:
+    """Return whether the current process has an interactive TTY."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _resolve_bool_env(env_name: str, default_value: bool) -> bool:
+    """Resolve a boolean option with environment override support.
+
+    Args:
+        env_name: Environment variable name.
+        default_value: Fallback boolean value.
+
+    Returns:
+        Parsed boolean value from environment or the provided default.
+    """
+    raw = os.getenv(env_name)
+    if raw is None:
+        return default_value
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default_value
+
+
+def _attach_warnings(summary: ValidationSummary, warnings: list[str]) -> ValidationSummary:
+    """Attach contextual warnings to the validation summary."""
+    if not warnings:
+        return summary
+    return ValidationSummary(
+        results=summary.results,
+        include_lint=summary.include_lint,
+        include_schema=summary.include_schema,
+        include_preview=summary.include_preview,
+        include_lsp=summary.include_lsp,
+        gate_mode=summary.gate_mode,
+        fail_fast=summary.fail_fast,
+        stopped_early=summary.stopped_early,
+        discovered_files=summary.discovered_files,
+        warnings=tuple([*summary.warnings, *warnings]),
+    )

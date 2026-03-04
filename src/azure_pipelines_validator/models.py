@@ -103,6 +103,100 @@ class ServiceMessage(BaseModel):
     message: str = Field(description="Error message returned by the Azure DevOps service.")
 
 
+class PipelineSummary(BaseModel):
+    """Minimal Azure DevOps pipeline metadata used for auto-selection."""
+
+    id: int = Field(description="Numeric Azure DevOps pipeline identifier.")
+    name: str = Field(description="Azure DevOps pipeline display name.")
+    folder: str | None = Field(
+        default=None,
+        description="Pipeline folder path reported by Azure DevOps when available.",
+    )
+    url: str | None = Field(
+        default=None,
+        description="REST URL for this pipeline when provided by Azure DevOps.",
+    )
+    repository_name: str | None = Field(
+        default=None,
+        description="Repository name inferred from pipeline configuration metadata.",
+    )
+    repository_id: str | None = Field(
+        default=None,
+        description="Repository ID inferred from pipeline configuration metadata.",
+    )
+    default_branch: str | None = Field(
+        default=None,
+        description="Default branch configured for the pipeline repository resource.",
+    )
+
+
+class ResolvedAzureContext(BaseModel):
+    """Resolved Azure context inputs used to build runtime settings."""
+
+    organization: str = Field(description="Azure DevOps organization URL or slug.")
+    project: str = Field(description="Azure DevOps project name.")
+    pipeline_id: int = Field(description="Resolved Azure DevOps pipeline ID.")
+    personal_access_token: str = Field(
+        description="Resolved token string used to authenticate Azure API calls.",
+    )
+    token_kind: str = Field(
+        description="Token kind used for auth header strategy, for example 'pat' or 'bearer'.",
+    )
+    ref_name: str = Field(description="Git ref used for template expansion.")
+    timeout_seconds: float = Field(description="Azure DevOps request timeout in seconds.")
+
+
+class AuthStatusResult(BaseModel):
+    """Authentication status payload for CLI diagnostics."""
+
+    resolved_org: str | None = Field(
+        default=None,
+        description="Organization value resolved for auth lookups.",
+    )
+    keyring_backend_available: bool = Field(
+        description="Whether an OS keyring backend is available.",
+    )
+    default_org_stored: str | None = Field(
+        default=None,
+        description="Default organization currently stored in keyring.",
+    )
+    pat_present_for_org: bool = Field(
+        description="Whether a keychain PAT exists for the resolved organization.",
+    )
+    env_pat_present: bool = Field(
+        description="Whether PAT-related environment variables are currently set.",
+    )
+    azure_cli_available: bool = Field(
+        description="Whether Azure CLI access token fallback appears available.",
+    )
+
+
+class ContextDetectResult(BaseModel):
+    """Context detection payload for machine-readable diagnostics."""
+
+    organization: str | None = Field(
+        default=None,
+        description="Detected Azure DevOps organization.",
+    )
+    project: str | None = Field(
+        default=None,
+        description="Detected Azure DevOps project.",
+    )
+    repository: str | None = Field(
+        default=None,
+        description="Detected Azure DevOps repository.",
+    )
+    remote_name: str = Field(description="Git remote name used for detection.")
+    remote_url: str | None = Field(default=None, description="Git remote URL used for parsing.")
+    branch: str | None = Field(default=None, description="Detected git branch name.")
+    repo_root: str | None = Field(default=None, description="Detected repository root path.")
+    organization_source: str = Field(description="Source used to resolve organization.")
+    project_source: str = Field(description="Source used to resolve project.")
+    repository_source: str = Field(description="Source used to resolve repository.")
+    pipeline_id: int | None = Field(default=None, description="Resolved or selected pipeline ID.")
+    pipeline_source: str = Field(description="Source used to resolve pipeline ID.")
+
+
 class YamlKind(StrEnum):
     """Classification of Azure Pipelines YAML files."""
 

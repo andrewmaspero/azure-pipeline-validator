@@ -33,3 +33,11 @@ class ValidationHalt(RuntimeError):
 
 class LspValidationError(RuntimeError):
     """Raised when the Azure LSP language-server validation stage cannot run."""
+
+
+class AuthResolutionError(RuntimeError):
+    """Raised when Azure authentication cannot be resolved."""
+
+
+class ContextResolutionError(RuntimeError):
+    """Raised when Azure context auto-detection cannot resolve required values."""

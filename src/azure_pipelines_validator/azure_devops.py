@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 from .exceptions import AzureDevOpsError
 from .models import (
+    PipelineSummary,
     PreviewRequest,
     PreviewResponse,
     RepositoryContainer,
@@ -43,7 +44,7 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
         self._settings = settings
         self._client = httpx.Client(
             timeout=settings.request_timeout_seconds,
-            headers=self._default_headers(settings.personal_access_token),
+            headers=self._default_headers(settings.personal_access_token, settings.token_kind),
         )
         self._base = str(settings.organization).rstrip("/")
 
@@ -112,20 +113,121 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
             return response.text
         raise AzureDevOpsError(response.status_code, _extract_message(response))
 
+    def list_pipelines(self, project: str, top: int = 200) -> list[PipelineSummary]:
+        """List pipelines in a project.
+
+        Args:
+            project: Azure DevOps project name.
+            top: Maximum number of pipelines to return.
+
+        Returns:
+            Parsed list of pipeline summaries.
+
+        Raises:
+            AzureDevOpsError: If Azure DevOps returns a non-success status.
+        """
+        endpoint = (
+            f"{self._base}/{project}/_apis/pipelines?api-version={API_VERSION}&$top={int(top)}"
+        )
+        response = self._client.get(endpoint)
+        if not response.is_success:
+            raise AzureDevOpsError(response.status_code, _extract_message(response))
+
+        payload = response.json()
+        values = payload.get("value", []) if isinstance(payload, dict) else []
+        results: list[PipelineSummary] = []
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            configuration = item.get("configuration")
+            repository_name = None
+            repository_id = None
+            default_branch = None
+            if isinstance(configuration, dict):
+                repository = configuration.get("repository")
+                if isinstance(repository, dict):
+                    name = repository.get("name")
+                    repo_id = repository.get("id")
+                    branch = repository.get("defaultBranch")
+                    repository_name = str(name) if name is not None else None
+                    repository_id = str(repo_id) if repo_id is not None else None
+                    default_branch = str(branch) if branch is not None else None
+
+            pipeline_id = item.get("id")
+            if not isinstance(pipeline_id, int):
+                continue
+            results.append(
+                PipelineSummary(
+                    id=pipeline_id,
+                    name=str(item.get("name", "")),
+                    folder=str(item.get("folder")) if item.get("folder") is not None else None,
+                    url=str(item.get("url")) if item.get("url") is not None else None,
+                    repository_name=repository_name,
+                    repository_id=repository_id,
+                    default_branch=default_branch,
+                )
+            )
+        return results
+
+    def find_pipelines_by_name(self, project: str, name_hint: str) -> list[PipelineSummary]:
+        """Find pipelines by case-insensitive name match.
+
+        Args:
+            project: Azure DevOps project name.
+            name_hint: Pipeline name hint.
+
+        Returns:
+            Matching pipelines.
+        """
+        hint = name_hint.strip().lower()
+        if not hint:
+            return []
+        pipelines = self.list_pipelines(project)
+        return [pipeline for pipeline in pipelines if hint in pipeline.name.lower()]
+
+    def find_pipelines_for_repo(self, project: str, repo_name: str) -> list[PipelineSummary]:
+        """Find pipelines associated with a repository name.
+
+        Args:
+            project: Azure DevOps project name.
+            repo_name: Repository name hint.
+
+        Returns:
+            Matching pipelines based on repository metadata and name heuristics.
+        """
+        normalized_repo = repo_name.strip().lower()
+        if not normalized_repo:
+            return []
+        pipelines = self.list_pipelines(project)
+        matches: list[PipelineSummary] = []
+        for pipeline in pipelines:
+            if pipeline.repository_name and pipeline.repository_name.lower() == normalized_repo:
+                matches.append(pipeline)
+                continue
+            if normalized_repo in pipeline.name.lower():
+                matches.append(pipeline)
+        return matches
+
     @staticmethod
-    def _default_headers(token: SecretStr) -> httpx.Headers:
+    def _default_headers(token: SecretStr, token_kind: str) -> httpx.Headers:
         """Builds default request headers for Azure DevOps API calls.
 
         Args:
             token: Personal access token used for Basic authentication.
+            token_kind: Token kind string (``pat`` or ``bearer``).
 
         Returns:
             Preconfigured HTTP headers with auth and JSON content types.
         """
-        encoded = _encode_pat(token)
+        normalized_kind = token_kind.strip().lower()
+        if normalized_kind == "bearer":
+            auth_value = f"Bearer {token.get_secret_value()}"
+        else:
+            encoded = _encode_pat(token)
+            auth_value = f"Basic {encoded}"
         return httpx.Headers(
             {
-                "Authorization": f"Basic {encoded}",
+                "Authorization": auth_value,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }

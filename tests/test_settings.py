@@ -140,3 +140,24 @@ def test_missing_pipeline_id_raises_settings_error(monkeypatch, tmp_path: Path) 
 
     with pytest.raises(SettingsError, match="AZDO_PIPELINE_ID"):
         Settings.from_environment(repo_root=tmp_path)
+
+
+def test_from_resolved_context(tmp_path: Path) -> None:
+    settings = Settings.from_resolved_context(
+        organization="acme",
+        project="demo",
+        pipeline_id=10,
+        personal_access_token="token",
+        token_kind="bearer",
+        repo_root=tmp_path,
+        ref_name="refs/heads/feature",
+        timeout_seconds=15,
+    )
+
+    assert str(settings.organization) == "https://dev.azure.com/acme"
+    assert settings.project == "demo"
+    assert settings.pipeline_id == 10
+    assert settings.personal_access_token.get_secret_value() == "token"
+    assert settings.token_kind == "bearer"
+    assert settings.ref_name == "refs/heads/feature"
+    assert settings.request_timeout_seconds == 15

@@ -31,6 +31,10 @@ class Settings(BaseModel):
     personal_access_token: SecretStr = Field(
         description="Azure DevOps personal access token used for authenticated API calls.",
     )
+    token_kind: str = Field(
+        default="pat",
+        description="Token kind used for HTTP authorization, for example 'pat' or 'bearer'.",
+    )
     ref_name: str = Field(
         default="refs/heads/main",
         description="Git ref used by Azure DevOps to resolve template includes.",
@@ -113,7 +117,51 @@ class Settings(BaseModel):
             project=project_value,
             pipeline_id=pipeline_numeric,
             personal_access_token=SecretStr(token),
+            token_kind="pat",
             ref_name=ref_value,
+            repo_root=resolved_root,
+            request_timeout_seconds=timeout_value,
+        )
+
+    @classmethod
+    def from_resolved_context(
+        cls,
+        *,
+        organization: str,
+        project: str,
+        pipeline_id: int,
+        personal_access_token: str,
+        token_kind: str,
+        repo_root: Path | None = None,
+        ref_name: str | None = None,
+        timeout_seconds: float | str | None = None,
+    ) -> "Settings":
+        """Create settings from fully resolved context values.
+
+        Args:
+            organization: Azure DevOps organization URL or slug.
+            project: Azure DevOps project name.
+            pipeline_id: Azure DevOps pipeline ID.
+            personal_access_token: Resolved auth token value.
+            token_kind: Token kind string, for example ``pat`` or ``bearer``.
+            repo_root: Optional repository root override.
+            ref_name: Optional git ref override.
+            timeout_seconds: Optional timeout override.
+
+        Returns:
+            Parsed and validated settings instance.
+        """
+        resolved_root = (repo_root or Path.cwd()).resolve()
+        timeout_value = (
+            float(timeout_seconds) if timeout_seconds is not None else AZURE_TIMEOUT_DEFAULT
+        )
+        return cls(
+            organization=normalize_organization(organization),
+            project=project,
+            pipeline_id=int(pipeline_id),
+            personal_access_token=SecretStr(personal_access_token),
+            token_kind=token_kind.strip().lower() or "pat",
+            ref_name=ref_name or "refs/heads/main",
             repo_root=resolved_root,
             request_timeout_seconds=timeout_value,
         )

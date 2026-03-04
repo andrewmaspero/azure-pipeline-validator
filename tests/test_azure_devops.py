@@ -78,3 +78,48 @@ def test_download_schema(tmp_path):
     client.close()
 
     assert result == schema_text
+
+
+def test_list_pipelines_success(tmp_path):
+    settings = make_settings(tmp_path)
+    payload = {
+        "value": [
+            {
+                "id": 10,
+                "name": "build-orchestrator",
+                "folder": "\\",
+                "url": "https://dev.azure.com/acme/demo/_apis/pipelines/10",
+                "configuration": {
+                    "repository": {
+                        "name": "transcription-stack-deployment",
+                        "id": "repo-guid",
+                        "defaultBranch": "refs/heads/main",
+                    }
+                },
+            }
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert "pipelines" in str(request.url)
+        return httpx.Response(200, json=payload)
+
+    client = attach_transport(AzureDevOpsClient(settings), handler)
+    pipelines = client.list_pipelines("demo")
+    client.close()
+
+    assert len(pipelines) == 1
+    assert pipelines[0].id == 10
+    assert pipelines[0].repository_name == "transcription-stack-deployment"
+
+
+def test_bearer_token_headers(tmp_path):
+    settings = make_settings(tmp_path)
+    settings = settings.model_copy(update={"token_kind": "bearer"})
+    client = AzureDevOpsClient(settings)
+    try:
+        auth_header = client._client.headers.get("Authorization")
+    finally:
+        client.close()
+    assert auth_header == "Bearer token"

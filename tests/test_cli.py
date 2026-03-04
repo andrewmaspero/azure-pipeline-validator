@@ -582,7 +582,7 @@ def test_context_detect_json(monkeypatch, tmp_path: Path) -> None:
         repo_root = tmp_path
 
     monkeypatch.setattr(cli, "detect_git_context", lambda remote_name: _GitContext())
-    monkeypatch.setattr(cli, "resolve_org", lambda: "acme")
+    monkeypatch.setattr(cli, "resolve_org", lambda **kwargs: "acme")
 
     result = runner.invoke(cli.app, ["context", "detect", "--format", "json"], env={})
     assert result.exit_code == 0

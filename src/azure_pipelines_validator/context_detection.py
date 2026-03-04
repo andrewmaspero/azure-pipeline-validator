@@ -86,18 +86,80 @@ def detect_git_context(remote_name: str = "origin") -> GitContext:
     Returns:
         A ``GitContext`` containing detected git metadata.
     """
-    remote_url = _run_git("remote", "get-url", remote_name)
-    remote = parse_remote_url(remote_url) if remote_url else None
     current_branch = _run_git("rev-parse", "--abbrev-ref", "HEAD")
+    chosen_remote, remote_url = _resolve_remote_candidate(
+        requested_remote=remote_name,
+        current_branch=current_branch,
+    )
+    remote = parse_remote_url(remote_url) if remote_url else None
     repo_root_raw = _run_git("rev-parse", "--show-toplevel")
     repo_root = Path(repo_root_raw).expanduser().resolve() if repo_root_raw else None
     return GitContext(
-        remote_name=remote_name,
+        remote_name=chosen_remote,
         remote_url=remote_url,
         remote=remote,
         current_branch=current_branch,
         repo_root=repo_root,
     )
+
+
+def _resolve_remote_candidate(
+    *, requested_remote: str, current_branch: str | None
+) -> tuple[str, str | None]:
+    """Resolve the best git remote for Azure DevOps inference.
+
+    Selection order:
+    1. Requested remote (for explicit behavior compatibility)
+    2. Current branch upstream remote
+    3. Remaining remotes from ``git remote``
+
+    The first remote with a parseable Azure DevOps URL is selected. If none parse as
+    Azure DevOps, the first remote with a URL is returned.
+
+    Args:
+        requested_remote: Requested remote name, typically ``origin``.
+        current_branch: Current git branch name.
+
+    Returns:
+        Tuple of ``(remote_name, remote_url_or_none)``.
+    """
+    remotes = _list_remotes()
+    upstream_remote = _upstream_remote_for_branch(current_branch)
+
+    candidate_order: list[str] = []
+    for name in [requested_remote, upstream_remote, *remotes]:
+        if not name or name in candidate_order:
+            continue
+        candidate_order.append(name)
+
+    first_with_url: tuple[str, str] | None = None
+    for candidate in candidate_order:
+        url = _run_git("remote", "get-url", candidate)
+        if not url:
+            continue
+        if first_with_url is None:
+            first_with_url = (candidate, url)
+        if parse_remote_url(url) is not None:
+            return candidate, url
+
+    if first_with_url is not None:
+        return first_with_url
+    return requested_remote, None
+
+
+def _upstream_remote_for_branch(current_branch: str | None) -> str | None:
+    """Return configured upstream remote name for a branch, when available."""
+    if not current_branch or current_branch == "HEAD":
+        return None
+    return _run_git("config", "--get", f"branch.{current_branch}.remote")
+
+
+def _list_remotes() -> list[str]:
+    """List git remotes in the current repository."""
+    raw = _run_git("remote")
+    if not raw:
+        return []
+    return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
 def _run_git(*args: str) -> str | None:

@@ -619,7 +619,7 @@ def context_detect(
 ) -> None:
     """Display detected Azure context and source metadata."""
     git_context = detect_git_context(remote_name=remote_name)
-    resolved_org = resolve_org()
+    resolved_org = resolve_org(remote_name=remote_name)
     organization_source = (
         DetectionSource.GIT_REMOTE.value if git_context.remote else DetectionSource.UNSET.value
     )

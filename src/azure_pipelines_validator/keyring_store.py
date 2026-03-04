@@ -27,7 +27,7 @@ def is_keyring_backend_available() -> bool:
     return "keyring.backends.fail" not in module
 
 
-def resolve_org(explicit_org: str | None = None) -> str | None:
+def resolve_org(explicit_org: str | None = None, *, remote_name: str = "origin") -> str | None:
     """Resolve Azure DevOps org with local-first fallback ordering.
 
     Resolution order:
@@ -38,6 +38,7 @@ def resolve_org(explicit_org: str | None = None) -> str | None:
 
     Args:
         explicit_org: Explicit organization override.
+        remote_name: Git remote name used for organization auto-detection.
 
     Returns:
         Resolved organization slug or URL string when available.
@@ -49,7 +50,7 @@ def resolve_org(explicit_org: str | None = None) -> str | None:
     if env_org:
         return env_org
 
-    git_context = detect_git_context()
+    git_context = detect_git_context(remote_name=remote_name)
     if git_context.remote is not None:
         return git_context.remote.org
 

@@ -24,7 +24,9 @@ def test_resolve_org_from_git_remote(monkeypatch) -> None:
     class _Context:
         remote = _Remote()
 
-    monkeypatch.setattr(keyring_store, "detect_git_context", lambda: _Context())
+    monkeypatch.setattr(
+        keyring_store, "detect_git_context", lambda remote_name="origin": _Context()
+    )
     monkeypatch.setattr(keyring_store, "read_default_org", lambda: None)
     resolved = keyring_store.resolve_org(None)
     assert resolved == "remote-org"

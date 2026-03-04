@@ -51,3 +51,52 @@ def test_detect_git_context_uses_remote_name(monkeypatch, tmp_path: Path) -> Non
     assert detected.remote.org == "acme"
     assert detected.current_branch == "main"
     assert detected.repo_root == tmp_path.resolve()
+
+
+def test_detect_git_context_falls_back_to_single_remote(monkeypatch, tmp_path: Path) -> None:
+    def fake_run_git(*args: str) -> str | None:
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main"
+        if args == ("remote",):
+            return "main"
+        if args == ("config", "--get", "branch.main.remote"):
+            return "main"
+        if args == ("remote", "get-url", "origin"):
+            return None
+        if args == ("remote", "get-url", "main"):
+            return "https://dev.azure.com/acme/demo/_git/repo"
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        return None
+
+    monkeypatch.setattr(context_detection, "_run_git", fake_run_git)
+    detected = detect_git_context()
+    assert detected.remote_name == "main"
+    assert detected.remote is not None
+    assert detected.remote.org == "acme"
+    assert detected.remote.project == "demo"
+
+
+def test_detect_git_context_prefers_ado_when_origin_non_ado(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def fake_run_git(*args: str) -> str | None:
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "feature/x"
+        if args == ("remote",):
+            return "origin\nmain"
+        if args == ("config", "--get", "branch.feature/x.remote"):
+            return "main"
+        if args == ("remote", "get-url", "origin"):
+            return "https://github.com/acme/repo.git"
+        if args == ("remote", "get-url", "main"):
+            return "https://dev.azure.com/acme/demo/_git/repo"
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        return None
+
+    monkeypatch.setattr(context_detection, "_run_git", fake_run_git)
+    detected = detect_git_context()
+    assert detected.remote_name == "main"
+    assert detected.remote is not None
+    assert detected.remote.repo == "repo"

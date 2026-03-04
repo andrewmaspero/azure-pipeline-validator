@@ -590,3 +590,21 @@ def test_context_detect_json(monkeypatch, tmp_path: Path) -> None:
     assert payload["organization"] == "acme"
     assert payload["project"] == "demo"
     assert payload["repository"] == "repo"
+
+
+def test_resolve_ref_name_prefers_explicit(monkeypatch) -> None:
+    monkeypatch.setenv("AZDO_REFNAME", "refs/heads/env")
+    resolved = cli._resolve_ref_name("refs/heads/explicit", current_branch="feature/x")
+    assert resolved == "refs/heads/explicit"
+
+
+def test_resolve_ref_name_uses_env_when_set(monkeypatch) -> None:
+    monkeypatch.setenv("AZDO_REFNAME", "refs/heads/env")
+    resolved = cli._resolve_ref_name(None, current_branch="feature/x")
+    assert resolved == "refs/heads/env"
+
+
+def test_resolve_ref_name_uses_current_branch_when_env_missing(monkeypatch) -> None:
+    monkeypatch.delenv("AZDO_REFNAME", raising=False)
+    resolved = cli._resolve_ref_name(None, current_branch="feature/x")
+    assert resolved == "refs/heads/feature/x"

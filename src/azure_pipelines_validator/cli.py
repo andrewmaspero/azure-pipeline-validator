@@ -671,6 +671,7 @@ def context_pipelines(
     del branch  # Reserved for future branch-aware narrowing.
     git_context = detect_git_context(remote_name=remote_name)
     remote = git_context.remote
+    resolved_ref_name = _resolve_ref_name(None, current_branch=git_context.current_branch)
     resolved_org = azdo_org or os.getenv("AZDO_ORG") or (remote.org if remote else None)
     resolved_project = (
         azdo_project or os.getenv("AZDO_PROJECT") or (remote.project if remote else None)
@@ -687,7 +688,7 @@ def context_pipelines(
         personal_access_token=resolved_token.value,
         token_kind=resolved_token.kind.value,
         repo_root=Path.cwd(),
-        ref_name="refs/heads/main",
+        ref_name=resolved_ref_name,
         timeout_seconds=float(os.getenv("AZDO_TIMEOUT_SECONDS", "30")),
     )
     client = AzureDevOpsClient(settings)
@@ -723,6 +724,11 @@ def _resolve_settings(
 ) -> tuple[Settings, list[str]]:
     """Resolve runtime settings with layered auto-detection."""
     warnings: list[str] = []
+    git_context_for_ref = detect_git_context(remote_name=remote_name)
+    resolved_ref_name = _resolve_ref_name(
+        azdo_ref_name,
+        current_branch=git_context_for_ref.current_branch,
+    )
     if not auto_context:
         return (
             Settings.from_environment(
@@ -731,13 +737,13 @@ def _resolve_settings(
                 project=azdo_project,
                 pipeline_id=azdo_pipeline_id,
                 personal_access_token=azdo_pat,
-                ref_name=azdo_ref_name,
+                ref_name=resolved_ref_name,
                 timeout_seconds=azdo_timeout_seconds,
             ),
             warnings,
         )
 
-    git_context = detect_git_context(remote_name=remote_name)
+    git_context = git_context_for_ref
     remote = git_context.remote
 
     resolved_org, org_source = _resolve_org_value(azdo_org, remote)
@@ -787,7 +793,7 @@ def _resolve_settings(
                 personal_access_token=resolved_token.value,
                 token_kind=resolved_token.kind.value,
                 repo_root=repo_root,
-                ref_name=azdo_ref_name or os.getenv("AZDO_REFNAME") or "refs/heads/main",
+                ref_name=resolved_ref_name,
                 timeout_seconds=azdo_timeout_seconds
                 if azdo_timeout_seconds is not None
                 else float(os.getenv("AZDO_TIMEOUT_SECONDS", "30")),
@@ -845,7 +851,7 @@ def _resolve_settings(
         personal_access_token=resolved_token.value,
         token_kind=resolved_token.kind.value,
         repo_root=repo_root,
-        ref_name=azdo_ref_name or os.getenv("AZDO_REFNAME") or "refs/heads/main",
+        ref_name=resolved_ref_name,
         timeout_seconds=azdo_timeout_seconds
         if azdo_timeout_seconds is not None
         else float(os.getenv("AZDO_TIMEOUT_SECONDS", "30")),
@@ -901,6 +907,35 @@ def _prompt_for_pipeline(*, candidates: Sequence[object], console: Console) -> i
 def _is_interactive_terminal() -> bool:
     """Return whether the current process has an interactive TTY."""
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _resolve_ref_name(explicit_ref: str | None, *, current_branch: str | None) -> str:
+    """Resolve Azure DevOps ref name for preview/template expansion.
+
+    Resolution order:
+    1. Explicit ``--azdo-ref-name`` value.
+    2. ``AZDO_REFNAME`` environment variable.
+    3. Current git branch mapped to ``refs/heads/<branch>``.
+    4. ``refs/heads/main`` fallback.
+
+    Args:
+        explicit_ref: Explicit ref override from CLI.
+        current_branch: Current git branch name when available.
+
+    Returns:
+        A normalized ref name string.
+    """
+    if explicit_ref and explicit_ref.strip():
+        return explicit_ref.strip()
+    env_ref = os.getenv("AZDO_REFNAME", "").strip()
+    if env_ref:
+        return env_ref
+    if current_branch and current_branch.strip() and current_branch.strip() != "HEAD":
+        branch = current_branch.strip()
+        if branch.startswith("refs/"):
+            return branch
+        return f"refs/heads/{branch}"
+    return "refs/heads/main"
 
 
 def _resolve_bool_env(env_name: str, default_value: bool) -> bool:

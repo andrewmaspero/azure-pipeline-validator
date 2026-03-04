@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -41,17 +43,18 @@ from .models import (
     ValidationOptions,
     ValidationSummary,
 )
+from .pipeline_documents import DocumentLoader
 from .pipeline_resolution import (
     DEFAULT_CACHE_TTL_SECONDS,
     load_cached_pipeline_id,
     save_cached_pipeline_id,
     select_pipeline_candidates,
 )
+from .preview_wrapper import TemplateWrapper
 from .reporter import Reporter
 from .schema_engine import SchemaValidator
 from .service import ValidationService
 from .settings import Settings
-from .yaml_processing import DocumentLoader, TemplateWrapper
 from .yamllint_engine import YamllintRunner
 
 app = typer.Typer(
@@ -301,6 +304,21 @@ PipelineCacheTtlOption = Annotated[
     ),
 ]
 
+PreviewTargetOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--preview-target",
+        metavar="PATH",
+        show_default=False,
+        rich_help_panel="Validation toggles",
+        help=(
+            "Run preview against a single YAML file. "
+            "When omitted, local directory runs auto-detect the main pipeline YAML "
+            "from Azure DevOps CLI and preview only that file."
+        ),
+    ),
+]
+
 
 @app.command(
     help=(
@@ -328,6 +346,7 @@ def validate(
     prompt: PromptOption = True,
     pipeline_name: PipelineNameOption = None,
     pipeline_id_cache_ttl_seconds: PipelineCacheTtlOption = DEFAULT_CACHE_TTL_SECONDS,
+    preview_target: PreviewTargetOption = None,
     run_yamllint: Annotated[
         bool,
         typer.Option(
@@ -397,6 +416,7 @@ def validate(
         prompt: Enables interactive local candidate selection.
         pipeline_name: Optional pipeline name hint.
         pipeline_id_cache_ttl_seconds: Cache TTL for selected pipeline IDs.
+        preview_target: Optional explicit file path for single-file preview.
         run_yamllint: Enable advisory yamllint checks.
         run_schema: Enable advisory schema checks.
         run_preview: Enable preview validation against Azure DevOps.
@@ -452,6 +472,19 @@ def validate(
             console.print(f"[bold red]{error}")
             raise typer.Exit(code=2) from error
 
+    try:
+        resolved_preview_target, preview_warnings = _resolve_preview_target(
+            target=target,
+            repo_root=effective_repo_root,
+            run_preview=run_preview,
+            explicit_preview_target=preview_target,
+            settings=settings,
+        )
+        warnings.extend(preview_warnings)
+    except ContextResolutionError as error:
+        console.print(f"[bold red]{error}")
+        raise typer.Exit(code=2) from error
+
     scanner = FileScanner(effective_repo_root, hidden_mode=hidden_mode)
     loader = DocumentLoader()
     wrapper = TemplateWrapper(repo_root=effective_repo_root)
@@ -493,6 +526,7 @@ def validate(
             include_lsp=run_lsp,
             gate_mode=GateMode(gate_mode),
             fail_fast=fail_fast,
+            preview_target_path=resolved_preview_target,
         )
         try:
             summary = service.validate(target=target, options=options)
@@ -708,7 +742,7 @@ def context_pipelines(
     finally:
         client.close()
     for pipeline in candidates:
-        typer.echo(f"{pipeline.id}\t{pipeline.name}")
+        typer.echo(f"{pipeline.id}\t{pipeline.name}\t{pipeline.yaml_path or '-'}")
 
 
 def _resolve_settings(
@@ -941,6 +975,182 @@ def _resolve_ref_name(explicit_ref: str | None, *, current_branch: str | None) -
             return branch
         return f"refs/heads/{branch}"
     return "refs/heads/main"
+
+
+def _resolve_preview_target(
+    *,
+    target: Path,
+    repo_root: Path,
+    run_preview: bool,
+    explicit_preview_target: Path | None,
+    settings: Settings | None,
+) -> tuple[Path | None, list[str]]:
+    """Resolve preview target behavior for local and CI execution.
+
+    Args:
+        target: User-selected validation target.
+        repo_root: Repository root for relative path resolution.
+        run_preview: Whether preview stage is enabled.
+        explicit_preview_target: Optional explicit preview target path.
+        settings: Resolved Azure settings used for auto-detection.
+
+    Returns:
+        Tuple of resolved preview target path (or ``None`` for per-file preview)
+        and user-facing warnings.
+
+    Raises:
+        ContextResolutionError: If an explicit preview target path does not exist.
+    """
+    warnings: list[str] = []
+    if not run_preview:
+        return None, warnings
+
+    resolved_target = _resolve_target_path(repo_root=repo_root, candidate=target)
+    env_preview_target = os.getenv("AZP_VALIDATOR_PREVIEW_TARGET", "").strip()
+    effective_preview_target = explicit_preview_target or (
+        Path(env_preview_target) if env_preview_target else None
+    )
+    if effective_preview_target is not None:
+        resolved_preview = _resolve_target_path(
+            repo_root=repo_root, candidate=effective_preview_target
+        )
+        if not resolved_preview.exists():
+            raise ContextResolutionError(f"Preview target path does not exist: {resolved_preview}")
+        if resolved_preview.is_dir():
+            raise ContextResolutionError(
+                f"Preview target must be a file, not a directory: {resolved_preview}"
+            )
+        return resolved_preview, warnings
+
+    if resolved_target.is_file():
+        return resolved_target, warnings
+
+    if _is_ci_environment():
+        warnings.append(
+            "CI environment detected; preview runs per file unless --preview-target "
+            "(or AZP_VALIDATOR_PREVIEW_TARGET) is set."
+        )
+        return None, warnings
+
+    if settings is None:
+        return None, warnings
+
+    discovered_path = _discover_pipeline_yaml_path_with_az(settings=settings)
+    if not discovered_path:
+        warnings.append(
+            "Unable to auto-detect main pipeline YAML via Azure DevOps CLI; "
+            "preview will run per file."
+        )
+        return None, warnings
+
+    normalized_discovered_path = discovered_path.strip()
+    path_candidate = Path(normalized_discovered_path)
+    if normalized_discovered_path.startswith("/"):
+        # Azure DevOps commonly reports repo-relative YAML paths with a leading slash.
+        resolved_preview = (repo_root / normalized_discovered_path.lstrip("/")).resolve()
+    elif path_candidate.is_absolute():
+        resolved_preview = path_candidate.resolve()
+    else:
+        resolved_preview = (repo_root / normalized_discovered_path).resolve()
+
+    if not resolved_preview.exists():
+        warnings.append(
+            "Azure DevOps reported main pipeline YAML path "
+            f"'{discovered_path}', but it was not found locally; preview will run per file."
+        )
+        return None, warnings
+    if resolved_preview.is_dir():
+        warnings.append(
+            "Azure DevOps reported a directory as the main pipeline target; "
+            "preview will run per file."
+        )
+        return None, warnings
+
+    try:
+        display_path = resolved_preview.relative_to(repo_root).as_posix()
+    except ValueError:
+        display_path = resolved_preview.as_posix()
+    warnings.append(f"Local mode: preview is scoped to main pipeline file '{display_path}'.")
+    return resolved_preview, warnings
+
+
+def _discover_pipeline_yaml_path_with_az(*, settings: Settings) -> str | None:
+    """Discover the configured pipeline YAML path using Azure DevOps CLI.
+
+    Args:
+        settings: Resolved settings containing org/project/pipeline context.
+
+    Returns:
+        Pipeline configuration path from Azure DevOps when available.
+    """
+    command = [
+        "az",
+        "pipelines",
+        "show",
+        "--id",
+        str(settings.pipeline_id),
+        "--org",
+        str(settings.organization),
+        "--project",
+        settings.project,
+        "--output",
+        "json",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    configuration = payload.get("configuration")
+    if not isinstance(configuration, dict):
+        return None
+    path_value = configuration.get("path")
+    if not isinstance(path_value, str):
+        return None
+    normalized = path_value.strip()
+    return normalized or None
+
+
+def _resolve_target_path(*, repo_root: Path, candidate: Path) -> Path:
+    """Resolve a candidate path relative to the repo root when needed.
+
+    Args:
+        repo_root: Repository root path.
+        candidate: User-provided or discovered path.
+
+    Returns:
+        Absolute resolved path.
+    """
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (repo_root / candidate).resolve()
+
+
+def _is_ci_environment() -> bool:
+    """Return whether current process appears to run in CI."""
+    return any(
+        bool(os.getenv(name, "").strip())
+        for name in (
+            "CI",
+            "TF_BUILD",
+            "GITHUB_ACTIONS",
+            "BUILDKITE",
+            "JENKINS_URL",
+            "BUILD_BUILDID",
+        )
+    )
 
 
 def _resolve_bool_env(env_name: str, default_value: bool) -> bool:

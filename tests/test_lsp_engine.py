@@ -33,7 +33,7 @@ from azure_pipelines_validator.lsp_engine import (
     _wait_for_fd,
 )
 from azure_pipelines_validator.models import LspFinding, YamlKind
-from azure_pipelines_validator.yaml_processing import YamlDocument
+from azure_pipelines_validator.pipeline_documents import YamlDocument
 
 
 def _make_vsix_bytes(*, include_required_files: bool = True) -> bytes:

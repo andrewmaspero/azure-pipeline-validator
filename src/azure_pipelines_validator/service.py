@@ -18,8 +18,9 @@ from .models import (
     ValidationSummary,
     YamllintFinding,
 )
+from .pipeline_documents import DocumentLoader, YamlDocument
+from .preview_wrapper import TemplateWrapper
 from .schema_engine import SchemaValidator
-from .yaml_processing import DocumentLoader, TemplateWrapper, YamlDocument
 from .yamllint_engine import YamllintRunner
 
 
@@ -82,7 +83,7 @@ class ValidationService:
                 wrapped_content = self._wrapper.wrap(document)
 
             schema_findings = self._run_schema(document, options, wrapped_content)
-            preview_findings, final_yaml, preview_error = self._run_preview(
+            preview_findings, final_yaml, preview_error, preview_ran = self._run_preview(
                 document, options, wrapped_content
             )
 
@@ -93,6 +94,7 @@ class ValidationService:
                 preview=preview_findings,
                 lsp=lsp_findings,
                 final_yaml=final_yaml,
+                preview_ran=preview_ran,
                 preview_error=preview_error,
                 lsp_error=lsp_error,
             )
@@ -151,9 +153,11 @@ class ValidationService:
         document: YamlDocument,
         options: ValidationOptions,
         wrapped_content: str | None,
-    ) -> tuple[tuple[PreviewFinding, ...], str | None, bool]:
+    ) -> tuple[tuple[PreviewFinding, ...], str | None, bool, bool]:
         if not options.include_preview:
-            return tuple(), None, False
+            return tuple(), None, False, False
+        if options.preview_target_path is not None and options.preview_target_path != document.path:
+            return tuple(), None, False, False
         if self._client is None:
             raise RuntimeError("Preview requested but Azure DevOps client is not configured")
         wrapped = wrapped_content if wrapped_content is not None else self._wrapper.wrap(document)
@@ -167,7 +171,7 @@ class ValidationService:
                 message=error.detail,
                 level=None,
             )
-            return (finding,), None, True
+            return (finding,), None, True, True
         findings: list[PreviewFinding] = []
         for message in response.validation_results:
             findings.append(
@@ -177,7 +181,7 @@ class ValidationService:
                     level=message.message_level,
                 )
             )
-        return tuple(findings), response.final_yaml, False
+        return tuple(findings), response.final_yaml, False, True
 
     def _run_lsp(
         self, document: YamlDocument, options: ValidationOptions

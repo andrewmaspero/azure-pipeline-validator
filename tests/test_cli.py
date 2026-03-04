@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from azure_pipelines_validator import cli
 from azure_pipelines_validator.exceptions import (
     AzureDevOpsError,
+    ContextResolutionError,
     LspValidationError,
     SchemaUnavailableError,
 )
@@ -45,6 +47,19 @@ def invoke_validate(args: list[str], *, env: dict[str, str], catch_exceptions: b
         ["validate", *args],
         env=env,
         catch_exceptions=catch_exceptions,
+    )
+
+
+def make_settings(tmp_path: Path) -> cli.Settings:
+    return cli.Settings.from_resolved_context(
+        organization="https://dev.azure.com/example",
+        project="demo",
+        pipeline_id=9,
+        personal_access_token="token",
+        token_kind="pat",
+        repo_root=tmp_path,
+        ref_name="refs/heads/main",
+        timeout_seconds=5,
     )
 
 
@@ -609,3 +624,87 @@ def test_resolve_ref_name_uses_current_branch_when_env_missing(monkeypatch) -> N
     monkeypatch.delenv("AZDO_REFNAME", raising=False)
     resolved = cli._resolve_ref_name(None, current_branch="feature/x")
     assert resolved == "refs/heads/feature/x"
+
+
+def test_resolve_preview_target_local_directory_uses_detected_main_pipeline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    target = tmp_path / ".azure-pipelines"
+    target.mkdir()
+    main_pipeline = tmp_path / "azure-pipelines.yml"
+    main_pipeline.write_text("trigger: none\n", encoding="utf-8")
+    settings = make_settings(tmp_path)
+
+    monkeypatch.setattr(cli, "_is_ci_environment", lambda: False)
+    monkeypatch.setattr(
+        cli,
+        "_discover_pipeline_yaml_path_with_az",
+        lambda settings: "/azure-pipelines.yml",
+    )
+
+    resolved, warnings = cli._resolve_preview_target(
+        target=target,
+        repo_root=tmp_path,
+        run_preview=True,
+        explicit_preview_target=None,
+        settings=settings,
+    )
+
+    assert resolved == main_pipeline.resolve()
+    assert any("Local mode: preview is scoped" in warning for warning in warnings)
+
+
+def test_resolve_preview_target_ci_keeps_per_file_mode(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / ".azure-pipelines"
+    target.mkdir()
+    monkeypatch.setattr(cli, "_is_ci_environment", lambda: True)
+
+    resolved, warnings = cli._resolve_preview_target(
+        target=target,
+        repo_root=tmp_path,
+        run_preview=True,
+        explicit_preview_target=None,
+        settings=None,
+    )
+
+    assert resolved is None
+    assert any("CI environment detected" in warning for warning in warnings)
+
+
+def test_resolve_preview_target_raises_for_missing_explicit_path(tmp_path: Path) -> None:
+    with pytest.raises(ContextResolutionError, match="does not exist"):
+        cli._resolve_preview_target(
+            target=tmp_path,
+            repo_root=tmp_path,
+            run_preview=True,
+            explicit_preview_target=Path("missing.yml"),
+            settings=None,
+        )
+
+
+def test_discover_pipeline_yaml_path_with_az_parses_show_payload(
+    monkeypatch, tmp_path: Path
+) -> None:
+    settings = make_settings(tmp_path)
+
+    class _Completed:
+        returncode = 0
+        stdout = '{"configuration":{"path":"/azure-pipelines.yml"}}'
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    assert cli._discover_pipeline_yaml_path_with_az(settings=settings) == "/azure-pipelines.yml"
+
+
+def test_discover_pipeline_yaml_path_with_az_returns_none_on_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    settings = make_settings(tmp_path)
+
+    class _Completed:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    assert cli._discover_pipeline_yaml_path_with_az(settings=settings) is None

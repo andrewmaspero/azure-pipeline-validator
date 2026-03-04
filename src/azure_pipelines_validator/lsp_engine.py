@@ -26,7 +26,7 @@ from zipfile import BadZipFile, ZipFile
 
 from .exceptions import LspValidationError
 from .models import LspFinding
-from .yaml_processing import YamlDocument
+from .pipeline_documents import YamlDocument
 
 _EXTENSION_PREFIX = "ms-azure-devops.azure-pipelines-"
 _DEFAULT_TIMEOUT_SECONDS = 5.0

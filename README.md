@@ -84,6 +84,7 @@ uvx azure-pipeline-validator validate --help
 | `AZP_VALIDATOR_AUTO_CONTEXT` | no | `1` | boolean | Enables automatic org/project/pipeline resolution. |
 | `AZP_VALIDATOR_PROMPT` | no | `1` (TTY) | boolean | Enables local interactive selection for ambiguous pipeline matches. |
 | `AZP_VALIDATOR_PIPELINE_NAME` | no | - | string | Optional pipeline name hint for auto-resolution. |
+| `AZP_VALIDATOR_PREVIEW_TARGET` | no | auto (local) / per-file (CI) | path | Optional file override for preview stage targeting. |
 | `AZP_VALIDATOR_CONTEXT_CACHE_DIR` | no | `~/.azure-pipeline-validator/context` | path | Cache directory for repository-scoped pipeline selections. |
 | `AZP_VALIDATOR_CONTEXT_CACHE_TTL_SECONDS` | no | `300` | integer | TTL for cached pipeline selections. |
 
@@ -140,6 +141,7 @@ Options:
   --run-yamllint / --skip-yamllint     Enable or disable optional advisory yamllint checks.  [default: skip-yamllint]
   --run-schema / --skip-schema         Enable or disable deprecated advisory schema checks.  [default: skip-schema]
   --run-preview / --skip-preview       Call the Azure DevOps preview endpoint to fetch the compiled finalYaml.
+  --preview-target PATH                Run preview against a single YAML file (CI-friendly override).
   --run-lsp / --skip-lsp             Validate via Azure DevOps pipeline language server (LSP).
   --lsp-server-path PATH             Path to language server entrypoint (dist/server.js).
   --lsp-schema-path PATH             Path to language server schema (service-schema.json).
@@ -184,6 +186,12 @@ Examples:
 ```bash
 # default (common): includes common Azure DevOps hidden directories
 uv run azure-pipeline-validator validate . --repo-root $(pwd)
+
+# local directory runs auto-detect the main pipeline YAML and scope preview to that file
+uv run azure-pipeline-validator validate .azure-pipelines --repo-root $(pwd)
+
+# CI override: force preview to one file
+uv run azure-pipeline-validator validate . --preview-target azure-pipelines.yml --repo-root $(pwd)
 
 # strict: skip hidden directories during directory scans
 uv run azure-pipeline-validator validate --hidden-mode none . --repo-root $(pwd)
@@ -272,6 +280,8 @@ uvx --from pydocstyle pydocstyle --convention=google src
 
 - Validate a repo quickly: `uv run azure-pipeline-validator validate . --repo-root $(pwd)`
 - Authoritative-only gate (default): preview and lsp determine exit code.
+- Local directory runs auto-scope preview to the Azure DevOps main pipeline YAML.
+- CI runs keep per-file preview unless `--preview-target` (or `AZP_VALIDATOR_PREVIEW_TARGET`) is set.
 - Strict all-stage gate: `--run-yamllint --run-schema --gate-mode all`
 - Fail fast for CI cost control: add `--fail-fast`.
 - Treat schema warnings as advisory; schema stage is soft-deprecated for Azure correctness.

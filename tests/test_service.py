@@ -9,12 +9,15 @@ from azure_pipelines_validator.models import (
     FileValidationResult,
     GateMode,
     LspFinding,
+    StageName,
+    StageStatus,
     ValidationMessage,
     ValidationOptions,
     YamlKind,
 )
+from azure_pipelines_validator.pipeline_documents import YamlDocument
+from azure_pipelines_validator.preview_wrapper import TemplateWrapper
 from azure_pipelines_validator.service import ValidationService
-from azure_pipelines_validator.yaml_processing import TemplateWrapper, YamlDocument
 
 
 class FakeClient:
@@ -104,6 +107,34 @@ def test_validation_service_runs_all_steps(tmp_path):
     assert summary.total_files == 2
     assert client.calls == 2
     assert not summary.success
+
+
+def test_validation_service_scopes_preview_to_target_file(tmp_path: Path) -> None:
+    main = tmp_path / "azure-pipelines.yml"
+    secondary = tmp_path / "templates" / "steps.yml"
+    secondary.parent.mkdir(parents=True)
+    main.write_text("trigger: none\n", encoding="utf-8")
+    secondary.write_text("steps: []\n", encoding="utf-8")
+
+    service, client = build_service((main, secondary))
+
+    summary = service.validate(
+        tmp_path,
+        ValidationOptions(
+            include_lint=False,
+            include_schema=False,
+            include_preview=True,
+            include_lsp=False,
+            preview_target_path=main.resolve(),
+        ),
+    )
+
+    assert client.calls == 1
+    assert summary.results[0].path == main
+    assert summary.results[0].preview_ran is True
+    assert summary.results[1].path == secondary
+    assert summary.results[1].preview_ran is False
+    assert summary.results[1].stage_status(StageName.PREVIEW, enabled=True) == StageStatus.SKIPPED
 
 
 def test_validation_service_fail_fast(tmp_path):

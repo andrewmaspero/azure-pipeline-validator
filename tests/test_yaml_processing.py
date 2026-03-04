@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from azure_pipelines_validator import yaml_processing as legacy_yaml_processing
 from azure_pipelines_validator.models import YamlKind
-from azure_pipelines_validator.yaml_processing import (
+from azure_pipelines_validator.pipeline_documents import (
     DocumentLoader,
-    TemplateWrapper,
     YamlDocument,
     classify_document,
 )
+from azure_pipelines_validator.preview_wrapper import TemplateWrapper
 
 
 def test_classify_document_detects_pipeline() -> None:
@@ -18,6 +19,13 @@ def test_classify_document_detects_pipeline() -> None:
     kind = classify_document(content, path)
 
     assert kind == YamlKind.PIPELINE
+
+
+def test_legacy_yaml_processing_reexports_current_symbols() -> None:
+    assert legacy_yaml_processing.DocumentLoader is DocumentLoader
+    assert legacy_yaml_processing.TemplateWrapper is TemplateWrapper
+    assert legacy_yaml_processing.YamlDocument is YamlDocument
+    assert legacy_yaml_processing.classify_document is classify_document
 
 
 def test_classify_document_uses_path_segments() -> None:

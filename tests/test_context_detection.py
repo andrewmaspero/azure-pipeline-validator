@@ -77,9 +77,7 @@ def test_detect_git_context_falls_back_to_single_remote(monkeypatch, tmp_path: P
     assert detected.remote.project == "demo"
 
 
-def test_detect_git_context_prefers_ado_when_origin_non_ado(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_detect_git_context_prefers_ado_when_origin_non_ado(monkeypatch, tmp_path: Path) -> None:
     def fake_run_git(*args: str) -> str | None:
         if args == ("rev-parse", "--abbrev-ref", "HEAD"):
             return "feature/x"

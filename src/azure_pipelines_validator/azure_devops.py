@@ -143,7 +143,10 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
             repository_name = None
             repository_id = None
             default_branch = None
+            yaml_path = None
             if isinstance(configuration, dict):
+                config_path = configuration.get("path")
+                yaml_path = str(config_path) if config_path is not None else None
                 repository = configuration.get("repository")
                 if isinstance(repository, dict):
                     name = repository.get("name")
@@ -165,6 +168,7 @@ class AzureDevOpsClient(AbstractContextManager["AzureDevOpsClient"]):
                     repository_name=repository_name,
                     repository_id=repository_id,
                     default_branch=default_branch,
+                    yaml_path=yaml_path,
                 )
             )
         return results

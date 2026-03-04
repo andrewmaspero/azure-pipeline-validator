@@ -128,6 +128,10 @@ class PipelineSummary(BaseModel):
         default=None,
         description="Default branch configured for the pipeline repository resource.",
     )
+    yaml_path: str | None = Field(
+        default=None,
+        description="Pipeline YAML path from pipeline configuration when available.",
+    )
 
 
 class ResolvedAzureContext(BaseModel):
@@ -294,6 +298,7 @@ class FileValidationResult:
     preview: Sequence[PreviewFinding]
     lsp: Sequence[LspFinding]
     final_yaml: str | None
+    preview_ran: bool = True
     yamllint_error: bool = False
     schema_error: bool = False
     preview_error: bool = False
@@ -326,6 +331,8 @@ class FileValidationResult:
             The computed status for the stage.
         """
         if not enabled:
+            return StageStatus.SKIPPED
+        if stage == StageName.PREVIEW and not self.preview_ran:
             return StageStatus.SKIPPED
         findings = {
             StageName.YAMLLINT: self.yamllint,
@@ -414,3 +421,4 @@ class ValidationOptions:
     include_lsp: bool = True
     gate_mode: GateMode = GateMode.AUTHORITATIVE
     fail_fast: bool = False
+    preview_target_path: Path | None = None

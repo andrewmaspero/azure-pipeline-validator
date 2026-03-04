@@ -547,7 +547,7 @@ def test_cli_hidden_mode_all_includes_non_common_hidden_directory(tmp_path: Path
 
 
 def test_auth_status_json(monkeypatch) -> None:
-    monkeypatch.setattr(cli, "is_keyring_backend_available", lambda: True)
+    monkeypatch.setattr(cli, "keyring_backend_status", lambda: (True, "tests.backend"))
     monkeypatch.setattr(cli, "read_default_org", lambda: "acme")
     monkeypatch.setattr(cli, "read_pat", lambda org: "token")
     monkeypatch.setattr(cli, "resolve_org", lambda org=None: "acme")
@@ -565,6 +565,7 @@ def test_auth_status_json(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["resolved_org"] == "acme"
+    assert payload["keyring_backend_detail"] == "tests.backend"
     assert payload["pat_present_for_org"] is True
 
 

@@ -17,14 +17,27 @@ def is_keyring_backend_available() -> bool:
     Returns:
         ``True`` when a non-failing keyring backend is configured.
     """
+    available, _ = keyring_backend_status()
+    return available
+
+
+def keyring_backend_status() -> tuple[bool, str]:
+    """Return keyring backend availability and a human-readable detail.
+
+    Returns:
+        Tuple of ``(is_available, detail_message)``.
+    """
     try:
         import keyring
-    except Exception:
-        return False
+    except Exception as exc:
+        return False, f"keyring import failed: {exc}"
 
     backend = keyring.get_keyring()
-    module = backend.__class__.__module__.lower()
-    return "keyring.backends.fail" not in module
+    backend_module = backend.__class__.__module__
+    backend_name = backend.__class__.__name__
+    if "keyring.backends.fail" in backend_module.lower():
+        return False, f"no usable keyring backend ({backend_module}.{backend_name})"
+    return True, f"{backend_module}.{backend_name}"
 
 
 def resolve_org(explicit_org: str | None = None, *, remote_name: str = "origin") -> str | None:

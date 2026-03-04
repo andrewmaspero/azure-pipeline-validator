@@ -156,6 +156,9 @@ class AuthStatusResult(BaseModel):
     keyring_backend_available: bool = Field(
         description="Whether an OS keyring backend is available.",
     )
+    keyring_backend_detail: str = Field(
+        description="Human-readable keyring backend detail or failure reason.",
+    )
     default_org_stored: str | None = Field(
         default=None,
         description="Default organization currently stored in keyring.",

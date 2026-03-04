@@ -26,7 +26,7 @@ from .file_scanner import FileScanner
 from .keyring_store import (
     clear_default_org,
     clear_pat,
-    is_keyring_backend_available,
+    keyring_backend_status,
     read_default_org,
     read_pat,
     resolve_org,
@@ -528,6 +528,7 @@ def auth_set_pat(
     try:
         store_pat(token=resolved_token, org=resolved_org)
     except RuntimeError as error:
+        typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"Stored PAT for org '{resolved_org}'.")
 
@@ -558,6 +559,7 @@ def auth_set_org(
     try:
         store_default_org(org)
     except RuntimeError as error:
+        typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from error
     typer.echo(f"Stored default org '{org}'.")
 
@@ -586,9 +588,11 @@ def auth_status(
     """Display auth-chain readiness details."""
     resolved_org = resolve_org(org)
     resolved_token = resolve_token(explicit_token=None, org_hint=resolved_org)
+    backend_available, backend_detail = keyring_backend_status()
     result = AuthStatusResult(
         resolved_org=resolved_org,
-        keyring_backend_available=is_keyring_backend_available(),
+        keyring_backend_available=backend_available,
+        keyring_backend_detail=backend_detail,
         default_org_stored=read_default_org(),
         pat_present_for_org=bool(read_pat(resolved_org)) if resolved_org else False,
         env_pat_present=any(
@@ -603,6 +607,7 @@ def auth_status(
         return
     typer.echo(f"Resolved org: {result.resolved_org or '(none)'}")
     typer.echo(f"Keyring backend available: {result.keyring_backend_available}")
+    typer.echo(f"Keyring backend detail: {result.keyring_backend_detail}")
     typer.echo(f"Default org stored: {result.default_org_stored or '(none)'}")
     typer.echo(f"PAT present for org: {result.pat_present_for_org}")
     typer.echo(f"PAT env present: {result.env_pat_present}")

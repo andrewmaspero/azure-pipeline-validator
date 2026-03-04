@@ -280,6 +280,7 @@ uvx --from pydocstyle pydocstyle --convention=google src
 
 - Validate a repo quickly: `uv run azure-pipeline-validator validate . --repo-root $(pwd)`
 - Authoritative-only gate (default): preview and lsp determine exit code.
+- In authoritative mode, preview/LSP warnings are advisory; error-level findings are blocking.
 - Local directory runs auto-scope preview to the Azure DevOps main pipeline YAML.
 - CI runs keep per-file preview unless `--preview-target` (or `AZP_VALIDATOR_PREVIEW_TARGET`) is set.
 - Strict all-stage gate: `--run-yamllint --run-schema --gate-mode all`

@@ -404,11 +404,43 @@ class ValidationSummary:
     def _is_blocking_failure(self, result: FileValidationResult) -> bool:
         if self.effective_gate_mode == GateMode.ALL:
             return not result.is_successful
+        if self.include_preview:
+            if result.preview_error:
+                return True
+            if result.preview_ran and any(
+                self._is_blocking_preview_finding(finding) for finding in result.preview
+            ):
+                return True
 
-        preview_status = result.stage_status(StageName.PREVIEW, enabled=self.include_preview)
-        lsp_status = result.stage_status(StageName.LSP, enabled=self.include_lsp)
-        blocking_statuses = {StageStatus.FAILED, StageStatus.ERROR}
-        return (preview_status in blocking_statuses) or (lsp_status in blocking_statuses)
+        if self.include_lsp:
+            if result.lsp_error:
+                return True
+            if any(self._is_blocking_lsp_finding(finding) for finding in result.lsp):
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_blocking_preview_finding(finding: PreviewFinding) -> bool:
+        """Return whether a preview finding should block authoritative gate mode."""
+        if finding.level is None:
+            return True
+        normalized = finding.level.strip().lower()
+        if normalized in {"warning", "warn", "info", "information", "hint"}:
+            return False
+        if normalized in {"error", "critical", "fatal"}:
+            return True
+        return True
+
+    @staticmethod
+    def _is_blocking_lsp_finding(finding: LspFinding) -> bool:
+        """Return whether an LSP finding should block authoritative gate mode."""
+        normalized = finding.severity.strip().lower()
+        if normalized in {"warning", "warn", "info", "information", "hint"}:
+            return False
+        if normalized in {"error", "critical", "fatal"}:
+            return True
+        return True
 
 
 @dataclass(slots=True)

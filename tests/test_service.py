@@ -9,10 +9,12 @@ from azure_pipelines_validator.models import (
     FileValidationResult,
     GateMode,
     LspFinding,
+    PreviewFinding,
     StageName,
     StageStatus,
     ValidationMessage,
     ValidationOptions,
+    ValidationSummary,
     YamlKind,
 )
 from azure_pipelines_validator.pipeline_documents import YamlDocument
@@ -271,6 +273,81 @@ def test_validation_service_warns_when_authoritative_gate_falls_back_to_all(
     assert summary.effective_gate_mode == GateMode.ALL
     assert any("falling back to 'all'" in warning for warning in summary.warnings)
     assert summary.failing_files == 1
+
+
+def test_authoritative_gate_treats_lsp_warnings_as_advisory(tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    result = FileValidationResult(
+        path=target,
+        yamllint=tuple(),
+        schema=tuple(),
+        preview=tuple(),
+        lsp=(
+            LspFinding(
+                path=target,
+                line=1,
+                column=1,
+                severity="warning",
+                message="lint-style warning",
+            ),
+        ),
+        final_yaml=None,
+    )
+    validation_summary = ValidationSummary(
+        results=(result,),
+        include_lint=False,
+        include_schema=False,
+        include_preview=True,
+        include_lsp=True,
+        gate_mode=GateMode.AUTHORITATIVE,
+    )
+    assert validation_summary.success is True
+    assert validation_summary.failing_files == 0
+    assert validation_summary.advisory_failing_files == 1
+
+
+def test_authoritative_gate_blocks_preview_errors_not_warnings(tmp_path: Path) -> None:
+    target = tmp_path / "pipeline.yml"
+    target.write_text("steps: []", encoding="utf-8")
+
+    warning_only = FileValidationResult(
+        path=target,
+        yamllint=tuple(),
+        schema=tuple(),
+        preview=(PreviewFinding(path=target, message="soft warning", level="warning"),),
+        lsp=tuple(),
+        final_yaml=None,
+    )
+    warning_summary = ValidationSummary(
+        results=(warning_only,),
+        include_lint=False,
+        include_schema=False,
+        include_preview=True,
+        include_lsp=True,
+        gate_mode=GateMode.AUTHORITATIVE,
+    )
+    assert warning_summary.success is True
+
+    error_case = FileValidationResult(
+        path=target,
+        yamllint=tuple(),
+        schema=tuple(),
+        preview=(PreviewFinding(path=target, message="hard failure", level="error"),),
+        lsp=tuple(),
+        final_yaml=None,
+    )
+    error_summary = ValidationSummary(
+        results=(error_case,),
+        include_lint=False,
+        include_schema=False,
+        include_preview=True,
+        include_lsp=True,
+        gate_mode=GateMode.AUTHORITATIVE,
+    )
+    assert error_summary.success is False
+    assert error_summary.failing_files == 1
 
 
 def test_file_validation_result_not_successful_when_stage_error_flag_set(tmp_path: Path) -> None:

@@ -231,7 +231,7 @@ GateModeOption = Annotated[
         rich_help_panel="Output",
         help=(
             "Blocking policy for exit code. "
-            "'authoritative' blocks only on preview + lsp failures; "
+            "'authoritative' blocks only on preview + lsp error-level findings; "
             "'all' blocks on every enabled stage."
         ),
     ),
